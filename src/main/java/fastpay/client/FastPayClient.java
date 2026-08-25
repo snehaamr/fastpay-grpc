@@ -107,6 +107,7 @@ public class FastPayClient {
                         Or start server and client together:
                           ./gradlew runDemo
                         """);
+                client.shutdown();
                 System.exit(1);
             }
             throw e;
