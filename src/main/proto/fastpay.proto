@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package fastpay;
+
+option java_multiple_files = true;
+option java_package = "fastpay.proto";
+option java_outer_classname = "FastPayProto";
+
+service FastPay {
+  // Unary: process a single payment.
+  rpc ProcessTransaction (TransactionRequest) returns (TransactionResponse);
+
+  // Client streaming: bulk payment upload, one summary response.
+  rpc UploadTransactions (stream TransactionRequest) returns (TransactionResponse);
+
+  // Server streaming: status updates for a single payment.
+  rpc TransactionStatus (TransactionRequest) returns (stream TransactionResponse);
+
+  // Bidirectional streaming: live payment processing.
+  rpc LiveTransactions (stream TransactionRequest) returns (stream TransactionResponse);
+}
+
+message TransactionRequest {
+  string transaction_id = 1;
+  string account_from = 2;
+  string account_to = 3;
+  double amount = 4;
+  string currency = 5;
+  int64 client_timestamp_nanos = 6;
+}
+
+message TransactionResponse {
+  string transaction_id = 1;
+  bool success = 2;
+  string message = 3;
+  int64 processing_nanos = 4;
+  int64 server_timestamp_nanos = 5;
+}

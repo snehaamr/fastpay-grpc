@@ -29,7 +29,7 @@ Async, non-blocking handlers so the server can scale to thousands of requests/se
 
 ./gradlew build
 ./gradlew run
-./gradlew run -PmainClass=com.example.fastpay.client.FastPayClient
+./gradlew run -PmainClass=fastpay.client.FastPayClient
 
 TransactionRequest {
   transaction_id: "txn-123",
@@ -47,7 +47,7 @@ TransactionResponse {
 }
 
 ghz --insecure \
-    --proto proto/fastpay.proto \
+    --proto src/main/proto/fastpay.proto \
     --call fastpay.FastPay.ProcessTransaction \
     -d '{"transaction_id":"x","account_from":"A","account_to":"B","amount":10.0,"currency":"USD"}' \
     -c 200 -n 100000 127.0.0.1:6565
