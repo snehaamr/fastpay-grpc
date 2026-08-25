@@ -21,6 +21,13 @@ Bidirectional streaming – Live transactions
 Continuous two-way stream between client and server
 Perfect for trading platforms, fraud monitoring, or high-frequency payments
 
+In-memory ledger – debit the source account and credit the destination
+Amounts are stored as integer cents; unknown accounts are rejected
+Seeded demo accounts: ACC-111, ACC-222, ACC-AAA, ACC-BBB ($10,000.00) and ACC-POOR ($1.00)
+
+Idempotency – `transaction_id` is unique; a retry returns the original outcome
+and does not post a second transfer (including insufficient-funds failures)
+
 gRPC over HTTP/2 for multiplexed streams and low-latency communication
 Protobuf serialization for compact, fast, binary payloads
 Netty transport (with optional Epoll on Linux) for high-performance networking
@@ -33,7 +40,7 @@ Stubs in `fastpay.proto` are generated from `src/main/proto/fastpay.proto` by
 
 ```bash
 git fetch origin
-git checkout cursor/fastpay-proto-build-test-ae1c   # or merge PR #1 onto your branch
+git checkout cursor/in-memory-ledger-idempotency-ae1c
 ./gradlew build
 ./gradlew run
 ./gradlew run -PmainClass=fastpay.client.FastPayClient

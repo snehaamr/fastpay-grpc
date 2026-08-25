@@ -39,6 +39,8 @@ public class FastPayClient {
 
         TransactionResponse resp = blockingStub.processTransaction(req);
         System.out.println("Unary response: " + resp.getMessage());
+        TransactionResponse replay = blockingStub.processTransaction(req);
+        System.out.println("Idempotent replay: " + replay.getMessage());
     }
 
     public void runBidi() throws InterruptedException {
