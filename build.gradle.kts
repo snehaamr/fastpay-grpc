@@ -79,3 +79,17 @@ tasks.withType<JavaCompile>().configureEach {
 tasks.test {
     useJUnitPlatform()
 }
+
+tasks.register<JavaExec>("runClient") {
+    group = "application"
+    description = "Run the sample gRPC client (server must already be listening on port 6565)"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("fastpay.client.FastPayClient")
+}
+
+tasks.register<JavaExec>("runDemo") {
+    group = "application"
+    description = "Start the server, run the sample client, then shut down"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("fastpay.client.FastPayDemo")
+}

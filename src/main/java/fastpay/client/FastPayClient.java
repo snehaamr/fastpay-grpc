@@ -8,6 +8,8 @@ import fastpay.proto.TransactionRequest;
 import fastpay.proto.TransactionResponse;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
 
 import java.util.concurrent.CountDownLatch;
@@ -94,6 +96,20 @@ public class FastPayClient {
         try {
             client.runUnary();
             client.runBidi();
+        } catch (StatusRuntimeException e) {
+            if (e.getStatus().getCode() == Status.Code.UNAVAILABLE) {
+                System.err.println("""
+                        Could not connect to FastPay at 127.0.0.1:6565 (connection refused).
+                        Start the server in another terminal:
+                          ./gradlew run
+                        Then run the client:
+                          ./gradlew runClient
+                        Or start server and client together:
+                          ./gradlew runDemo
+                        """);
+                System.exit(1);
+            }
+            throw e;
         } finally {
             client.shutdown();
         }

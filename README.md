@@ -41,12 +41,18 @@ Stubs in `fastpay.proto` are generated from `src/main/proto/fastpay.proto` by
 `./gradlew generateProto` (this runs automatically before `compileJava`).
 
 ```bash
-git fetch origin
-git checkout cursor/in-memory-ledger-idempotency-ae1c
 ./gradlew build
-./gradlew run
-./gradlew run -PmainClass=fastpay.client.FastPayClient
+
+# One command: start the server, run the sample client, shut down
+./gradlew runDemo
+
+# Or two terminals:
+./gradlew run                 # server on 127.0.0.1:6565 (blocks)
+./gradlew runClient           # unary + live demo against that server
 ```
+
+`./gradlew run -PmainClass=fastpay.client.FastPayClient` only starts the client.
+If nothing is listening on port 6565 you will get `UNAVAILABLE` / connection refused.
 
 If you see `package fastpay.proto does not exist` or `NettyServerBuilder`:
 you are compiling `main` from before this change, or IntelliJ is compiling
