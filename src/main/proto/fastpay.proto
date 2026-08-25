@@ -18,6 +18,12 @@ service FastPay {
 
   // Bidirectional streaming: live payment processing.
   rpc LiveTransactions (stream TransactionRequest) returns (stream TransactionResponse);
+
+  // Unary: current ledger balance for an account.
+  rpc GetAccount (AccountQuery) returns (AccountView);
+
+  // Unary: posted payments, optionally filtered by account.
+  rpc ListTransactions (ListTransactionsQuery) returns (ListTransactionsView);
 }
 
 message TransactionRequest {
@@ -35,4 +41,34 @@ message TransactionResponse {
   string message = 3;
   int64 processing_nanos = 4;
   int64 server_timestamp_nanos = 5;
+  bool replayed = 6;
+}
+
+message AccountQuery {
+  string account_id = 1;
+}
+
+message AccountView {
+  string account_id = 1;
+  int64 balance_cents = 2;
+  string currency = 3;
+}
+
+message ListTransactionsQuery {
+  string account_id = 1;
+  int32 limit = 2;
+}
+
+message ListTransactionsView {
+  repeated PaymentRecord payments = 1;
+}
+
+message PaymentRecord {
+  string transaction_id = 1;
+  string account_from = 2;
+  string account_to = 3;
+  int64 amount_cents = 4;
+  string currency = 5;
+  bool success = 6;
+  string message = 7;
 }

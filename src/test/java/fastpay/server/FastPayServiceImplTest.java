@@ -1,7 +1,11 @@
 package fastpay.server;
 
 import fastpay.ledger.InMemoryLedger;
+import fastpay.proto.AccountQuery;
+import fastpay.proto.AccountView;
 import fastpay.proto.FastPayGrpc;
+import fastpay.proto.ListTransactionsQuery;
+import fastpay.proto.ListTransactionsView;
 import fastpay.proto.TransactionRequest;
 import fastpay.proto.TransactionResponse;
 import io.grpc.ManagedChannel;
@@ -91,7 +95,9 @@ class FastPayServiceImplTest {
         TransactionResponse second = stub.processTransaction(request);
 
         assertTrue(first.getSuccess());
+        assertFalse(first.getReplayed());
         assertTrue(second.getSuccess());
+        assertTrue(second.getReplayed());
         assertEquals(first.getMessage(), second.getMessage());
         assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS - 1000, ledger.balanceCents("ACC-111"));
         assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS + 1000, ledger.balanceCents("ACC-222"));
@@ -168,6 +174,37 @@ class FastPayServiceImplTest {
                 () -> stub.transactionStatus(request("missing", "ACC-111", "ACC-222", 1.00)).hasNext()
         );
         assertEquals(Status.Code.NOT_FOUND, ex.getStatus().getCode());
+    }
+
+    @Test
+    void getAccountReturnsPostedBalance() {
+        stub.processTransaction(request("txn-bal", "ACC-111", "ACC-222", 10.00));
+        AccountView view = stub.getAccount(AccountQuery.newBuilder().setAccountId("ACC-111").build());
+        assertEquals("ACC-111", view.getAccountId());
+        assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS - 1000, view.getBalanceCents());
+        assertEquals("USD", view.getCurrency());
+    }
+
+    @Test
+    void getAccountUnknown() {
+        StatusRuntimeException ex = assertThrows(
+                StatusRuntimeException.class,
+                () -> stub.getAccount(AccountQuery.newBuilder().setAccountId("ACC-MISSING").build())
+        );
+        assertEquals(Status.Code.NOT_FOUND, ex.getStatus().getCode());
+    }
+
+    @Test
+    void listTransactionsFiltersByAccount() {
+        stub.processTransaction(request("txn-list-1", "ACC-111", "ACC-222", 1.00));
+        stub.processTransaction(request("txn-list-2", "ACC-AAA", "ACC-BBB", 2.00));
+        ListTransactionsView view = stub.listTransactions(ListTransactionsQuery.newBuilder()
+                .setAccountId("ACC-111")
+                .setLimit(10)
+                .build());
+        assertEquals(1, view.getPaymentsCount());
+        assertEquals("txn-list-1", view.getPayments(0).getTransactionId());
+        assertEquals(100, view.getPayments(0).getAmountCents());
     }
 
     private static TransactionRequest request(String id, String from, String to, double amount) {

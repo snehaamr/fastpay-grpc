@@ -1,9 +1,16 @@
 package fastpay.server;
 
+import fastpay.ledger.AccountSnapshot;
 import fastpay.ledger.InMemoryLedger;
 import fastpay.ledger.InvalidTransactionException;
 import fastpay.ledger.PostedTransaction;
+import fastpay.ledger.SubmitResult;
+import fastpay.proto.AccountQuery;
+import fastpay.proto.AccountView;
 import fastpay.proto.FastPayGrpc;
+import fastpay.proto.ListTransactionsQuery;
+import fastpay.proto.ListTransactionsView;
+import fastpay.proto.PaymentRecord;
 import fastpay.proto.TransactionRequest;
 import fastpay.proto.TransactionResponse;
 import io.grpc.Status;
@@ -39,8 +46,8 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
         long start = nowNanos();
         workerPool.execute(() -> {
             try {
-                PostedTransaction posted = ledger.submit(req);
-                complete(respObs, toResponse(posted, start));
+                SubmitResult result = ledger.submit(req);
+                complete(respObs, toResponse(result, start));
             } catch (InvalidTransactionException e) {
                 respObs.onError(Status.INVALID_ARGUMENT.withDescription(e.getMessage()).asRuntimeException());
             } catch (RuntimeException e) {
@@ -62,13 +69,12 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
             @Override
             public void onNext(TransactionRequest req) {
                 try {
-                    boolean firstSeen = ledger.find(req.getTransactionId()).isEmpty();
-                    PostedTransaction result = ledger.submit(req);
-                    if (!firstSeen) {
+                    SubmitResult result = ledger.submit(req);
+                    if (result.replayed()) {
                         replayed.incrementAndGet();
-                    } else if (result.success()) {
+                    } else if (result.transaction().success()) {
                         posted.incrementAndGet();
-                        totalCents.addAndGet(result.amountCents());
+                        totalCents.addAndGet(result.transaction().amountCents());
                     } else {
                         failed.incrementAndGet();
                     }
@@ -140,8 +146,8 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
             public void onNext(TransactionRequest req) {
                 long start = nowNanos();
                 try {
-                    PostedTransaction posted = ledger.submit(req);
-                    respObs.onNext(toResponse(posted, start));
+                    SubmitResult result = ledger.submit(req);
+                    respObs.onNext(toResponse(result, start));
                 } catch (InvalidTransactionException e) {
                     respObs.onNext(TransactionResponse.newBuilder()
                             .setTransactionId(req.getTransactionId())
@@ -165,11 +171,49 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
         };
     }
 
-    private TransactionResponse toResponse(PostedTransaction posted, long startNanos) {
+    @Override
+    public void getAccount(AccountQuery req, StreamObserver<AccountView> respObs) {
+        try {
+            AccountSnapshot snapshot = ledger.getAccount(req.getAccountId());
+            respObs.onNext(AccountView.newBuilder()
+                    .setAccountId(snapshot.accountId())
+                    .setBalanceCents(snapshot.balanceCents())
+                    .setCurrency(snapshot.currency())
+                    .build());
+            respObs.onCompleted();
+        } catch (InvalidTransactionException e) {
+            Status status = e.getMessage().contains("required")
+                    ? Status.INVALID_ARGUMENT
+                    : Status.NOT_FOUND;
+            respObs.onError(status.withDescription(e.getMessage()).asRuntimeException());
+        }
+    }
+
+    @Override
+    public void listTransactions(ListTransactionsQuery req, StreamObserver<ListTransactionsView> respObs) {
+        ListTransactionsView.Builder view = ListTransactionsView.newBuilder();
+        for (PostedTransaction payment : ledger.listPayments(req.getAccountId(), req.getLimit())) {
+            view.addPayments(PaymentRecord.newBuilder()
+                    .setTransactionId(payment.transactionId())
+                    .setAccountFrom(payment.accountFrom())
+                    .setAccountTo(payment.accountTo())
+                    .setAmountCents(payment.amountCents())
+                    .setCurrency(payment.currency())
+                    .setSuccess(payment.success())
+                    .setMessage(payment.message())
+                    .build());
+        }
+        respObs.onNext(view.build());
+        respObs.onCompleted();
+    }
+
+    private TransactionResponse toResponse(SubmitResult result, long startNanos) {
+        PostedTransaction posted = result.transaction();
         return TransactionResponse.newBuilder()
                 .setTransactionId(posted.transactionId())
                 .setSuccess(posted.success())
                 .setMessage(posted.message())
+                .setReplayed(result.replayed())
                 .setServerTimestampNanos(nowNanos())
                 .setProcessingNanos(nowNanos() - startNanos)
                 .build();

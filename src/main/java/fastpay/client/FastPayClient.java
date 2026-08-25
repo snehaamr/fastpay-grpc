@@ -1,5 +1,8 @@
 package fastpay.client;
 
+import fastpay.ledger.InMemoryLedger;
+import fastpay.proto.AccountQuery;
+import fastpay.proto.AccountView;
 import fastpay.proto.FastPayGrpc;
 import fastpay.proto.TransactionRequest;
 import fastpay.proto.TransactionResponse;
@@ -38,9 +41,17 @@ public class FastPayClient {
                 .build();
 
         TransactionResponse resp = blockingStub.processTransaction(req);
-        System.out.println("Unary response: " + resp.getMessage());
+        System.out.println("Unary response: " + resp.getMessage() + " replayed=" + resp.getReplayed());
         TransactionResponse replay = blockingStub.processTransaction(req);
-        System.out.println("Idempotent replay: " + replay.getMessage());
+        System.out.println("Idempotent replay: " + replay.getMessage() + " replayed=" + replay.getReplayed());
+        printAccount("ACC-111");
+        printAccount("ACC-222");
+    }
+
+    private void printAccount(String accountId) {
+        AccountView view = blockingStub.getAccount(AccountQuery.newBuilder().setAccountId(accountId).build());
+        System.out.println(view.getAccountId() + " balance="
+                + InMemoryLedger.formatAmount(view.getBalanceCents()) + " " + view.getCurrency());
     }
 
     public void runBidi() throws InterruptedException {
