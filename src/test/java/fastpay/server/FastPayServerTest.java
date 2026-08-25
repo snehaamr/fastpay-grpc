@@ -3,6 +3,8 @@ package fastpay.server;
 import fastpay.client.FastPayClient;
 import org.junit.jupiter.api.Test;
 
+import java.net.ServerSocket;
+
 class FastPayServerTest {
     @Test
     void clientCanTalkToStartedServer() throws Exception {
@@ -15,5 +17,14 @@ class FastPayServerTest {
             client.shutdown();
             server.stop();
         }
+    }
+
+    @Test
+    void runSampleStartsServerWhenNothingIsListening() throws Exception {
+        int port;
+        try (ServerSocket socket = new ServerSocket(0)) {
+            port = socket.getLocalPort();
+        }
+        FastPayClient.runSample("127.0.0.1", port, true);
     }
 }

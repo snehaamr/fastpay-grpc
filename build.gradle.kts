@@ -80,16 +80,28 @@ tasks.test {
     useJUnitPlatform()
 }
 
+fun JavaExec.allowDeprecatedUnsafeOnNewJdks() {
+    if (JavaVersion.current().majorVersion.toInt() >= 24) {
+        jvmArgs("--sun-misc-unsafe-memory-access=allow")
+    }
+}
+
+tasks.named<JavaExec>("run") {
+    allowDeprecatedUnsafeOnNewJdks()
+}
+
 tasks.register<JavaExec>("runClient") {
     group = "application"
-    description = "Run the sample gRPC client (server must already be listening on port 6565)"
+    description = "Run the sample client; starts a local server on 6565 if none is listening"
     classpath = sourceSets["main"].runtimeClasspath
     mainClass.set("fastpay.client.FastPayClient")
+    allowDeprecatedUnsafeOnNewJdks()
 }
 
 tasks.register<JavaExec>("runDemo") {
     group = "application"
-    description = "Start the server, run the sample client, then shut down"
+    description = "Same as runClient: start a server if needed, run the sample, then shut down"
     classpath = sourceSets["main"].runtimeClasspath
     mainClass.set("fastpay.client.FastPayDemo")
+    allowDeprecatedUnsafeOnNewJdks()
 }

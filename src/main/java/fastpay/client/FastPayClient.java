@@ -6,12 +6,14 @@ import fastpay.proto.AccountView;
 import fastpay.proto.FastPayGrpc;
 import fastpay.proto.TransactionRequest;
 import fastpay.proto.TransactionResponse;
+import fastpay.server.FastPayServer;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
-import io.grpc.Status;
-import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
 
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -91,28 +93,41 @@ public class FastPayClient {
         latch.await(5, TimeUnit.SECONDS);
     }
 
-    public static void main(String[] args) throws Exception {
-        FastPayClient client = new FastPayClient("127.0.0.1", 6565);
+    /**
+     * Runs the sample unary + live calls. If {@code startLocalServerIfNeeded} is true and
+     * nothing accepts connections on {@code port}, starts an in-process server first.
+     */
+    public static void runSample(String host, int port, boolean startLocalServerIfNeeded) throws Exception {
+        FastPayServer localServer = null;
+        int targetPort = port;
+        if (startLocalServerIfNeeded && !isReachable(host, port)) {
+            localServer = new FastPayServer(port);
+            localServer.start();
+            targetPort = localServer.getPort();
+            System.out.println("No server was listening; started a local FastPay server for this client run.");
+        }
+        FastPayClient client = new FastPayClient(host, targetPort);
         try {
             client.runUnary();
             client.runBidi();
-        } catch (StatusRuntimeException e) {
-            if (e.getStatus().getCode() == Status.Code.UNAVAILABLE) {
-                System.err.println("""
-                        Could not connect to FastPay at 127.0.0.1:6565 (connection refused).
-                        Start the server in another terminal:
-                          ./gradlew run
-                        Then run the client:
-                          ./gradlew runClient
-                        Or start server and client together:
-                          ./gradlew runDemo
-                        """);
-                client.shutdown();
-                System.exit(1);
-            }
-            throw e;
         } finally {
             client.shutdown();
+            if (localServer != null) {
+                localServer.stop();
+            }
         }
+    }
+
+    static boolean isReachable(String host, int port) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(host, port), 500);
+            return true;
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        runSample("127.0.0.1", FastPayServer.DEFAULT_PORT, true);
     }
 }
