@@ -26,10 +26,25 @@ Protobuf serialization for compact, fast, binary payloads
 Netty transport (with optional Epoll on Linux) for high-performance networking
 Async, non-blocking handlers so the server can scale to thousands of requests/sec
 
+Build (use Gradle, not a raw `javac` / IDE compiler)
 
+Stubs in `fastpay.proto` are generated from `src/main/proto/fastpay.proto` by
+`./gradlew generateProto` (this runs automatically before `compileJava`).
+
+```bash
+git fetch origin
+git checkout cursor/fastpay-proto-build-test-ae1c   # or merge PR #1 onto your branch
 ./gradlew build
 ./gradlew run
 ./gradlew run -PmainClass=fastpay.client.FastPayClient
+```
+
+If you see `package fastpay.proto does not exist` or `NettyServerBuilder`:
+you are compiling `main` from before this change, or IntelliJ is compiling
+without Gradle. Re-import the project as a Gradle project and set
+**Build and run using: Gradle** (Settings → Build, Execution, Deployment →
+Build Tools → Gradle). Then run `./gradlew clean generateProto build`.
+
 
 TransactionRequest {
   transaction_id: "txn-123",

@@ -1,5 +1,8 @@
+import com.google.protobuf.gradle.id
+
 plugins {
     java
+    idea
     application
     id("com.google.protobuf") version "0.9.4"
 }
@@ -20,17 +23,16 @@ val grpcVersion = "1.68.2"
 val protobufVersion = "3.25.5"
 
 dependencies {
-    implementation("io.grpc:grpc-netty:${grpcVersion}")
+    // shaded Netty: ServerBuilder plus the historical NettyServerBuilder import
+    implementation("io.grpc:grpc-netty-shaded:${grpcVersion}")
     implementation("io.grpc:grpc-protobuf:${grpcVersion}")
     implementation("io.grpc:grpc-stub:${grpcVersion}")
     implementation("com.google.protobuf:protobuf-java:${protobufVersion}")
+    // Required by generated gRPC stubs on Java 9+
     implementation("javax.annotation:javax.annotation-api:1.3.2")
 
     implementation("org.slf4j:slf4j-api:2.0.16")
     runtimeOnly("org.slf4j:slf4j-simple:2.0.16")
-
-    // Optional native transport on Linux x86_64; gRPC selects it when present.
-    runtimeOnly("io.netty:netty-transport-native-epoll:4.1.110.Final:linux-x86_64")
 
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.3")
     testImplementation("io.grpc:grpc-inprocess:${grpcVersion}")
@@ -47,17 +49,26 @@ protobuf {
         artifact = "com.google.protobuf:protoc:${protobufVersion}"
     }
     plugins {
-        create("grpc") {
+        id("grpc") {
             artifact = "io.grpc:protoc-gen-grpc-java:${grpcVersion}"
         }
     }
     generateProtoTasks {
-        all().forEach { task ->
+        ofSourceSet("main").forEach { task ->
             task.plugins {
-                create("grpc")
+                // Braces are required or the grpc plugin is not applied.
+                id("grpc") { }
             }
         }
     }
+}
+
+tasks.named("compileJava") {
+    dependsOn("generateProto")
+}
+
+tasks.named("compileTestJava") {
+    dependsOn("generateProto")
 }
 
 tasks.withType<JavaCompile>().configureEach {
