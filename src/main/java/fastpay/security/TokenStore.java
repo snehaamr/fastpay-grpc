@@ -51,7 +51,7 @@ public final class TokenStore {
         return value;
     }
 
-    static String sha256(String rawToken) {
+    public static String sha256(String rawToken) {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
                     .digest(rawToken.getBytes(StandardCharsets.UTF_8));
