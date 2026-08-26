@@ -28,12 +28,18 @@ Amounts are `int64 amount_cents` on the wire (no floating-point money)
 Idempotency – `transaction_id` is unique; a retry sets `replayed=true` and
 does not post a second transfer (including insufficient-funds and fraud flags)
 
-Auth interceptor – `authorization: Bearer demo-token` (override with `FASTPAY_AUTH_TOKEN`)
-Validation interceptor – required fields, positive `amount_cents`, distinct accounts
-Client deadlines – 5s unary / 15s streaming; server honors cancellation
+Durable SQLite ledger – balances and payments survive process restart (`FASTPAY_DB`)
+Seeded demo accounts: ACC-111, ACC-222, ACC-AAA, ACC-BBB ($10,000.00) and ACC-POOR ($1.00)
 
-TLS – set `FASTPAY_TLS=true` and point at `certs/server.crt` + `certs/server.key`
-(demo certs are self-signed for localhost; regenerate with `scripts/gen-certs.sh`)
+Auth – hashed API keys in SQLite with two roles:
+- `pay-token` (PAYMENTS): transfers, status, GetAccount, list one account
+- `admin-token` (ADMIN): also list all payments
+Override with `FASTPAY_PAY_TOKEN` / `FASTPAY_ADMIN_TOKEN`
+
+TLS – private keys are **not** committed. `FASTPAY_TLS=true` generates localhost
+certs via openssl if `certs/server.key` is missing (`scripts/gen-certs.sh`).
+
+CI – GitHub Actions runs `./gradlew test` on pushes and PRs to `main`.
 
 Live-stream fraud – amount above $1,000.00 (`100000` cents) or more than 8
 live payments from the same account in 10 seconds is `FLAGGED` and not posted
@@ -74,7 +80,7 @@ listed; `--rm` deletes the container as soon as it exits.
 
 ```bash
 docker build -t fastpay .
-docker run -d --name fastpay-grpc -p 6565:6565 fastpay
+docker run -d --name fastpay-grpc -p 6565:6565 -v fastpay-data:/data fastpay
 docker logs -f fastpay-grpc    # should print "FastPay gRPC server started on port 6565"
 docker stop fastpay-grpc && docker rm fastpay-grpc
 ```
@@ -85,13 +91,13 @@ TLS in the container:
 docker run -d --name fastpay-grpc -p 6565:6565 -e FASTPAY_TLS=true fastpay
 ```
 
-Default auth token is `demo-token`. ghz must send it:
+Default payments token is `pay-token` (admin is `admin-token`). ghz must send it:
 
 ```bash
 ghz --insecure \
     --proto src/main/proto/fastpay.proto \
     --call fastpay.FastPay.ProcessTransaction \
-    -m '{"authorization":"Bearer demo-token"}' \
+    -m '{"authorization":"Bearer pay-token"}' \
     -d '{"transaction_id":"x","account_from":"ACC-111","account_to":"ACC-222","amount_cents":1000,"currency":"USD"}' \
     -c 200 -n 100000 127.0.0.1:6565
 ```
@@ -122,7 +128,7 @@ TransactionResponse {
 
  -c 200 → 200 concurrent clients
 -n 100000 → 100k total requests
--m → metadata; required `authorization: Bearer demo-token`
+-m → metadata; required `authorization: Bearer pay-token`
 
 Monitor latency percentiles (p50, p95, p99) and throughput (QPS).
 
@@ -141,3 +147,5 @@ Fraud detection pipelines with streaming APIs
 Banking API integration (ACH, SEPA, SWIFT gateways)
 
 With FastPay, you have a fintech-grade blueprint for building low-latency, high-throughput APIs in Java using gRPC + Protobuf.
+
+This is still a demo: SQLite is not a HA payments database, the TLS certs are localhost self-signed, and API keys are hashed bearer tokens—not a bank-grade IAM or PCI program.

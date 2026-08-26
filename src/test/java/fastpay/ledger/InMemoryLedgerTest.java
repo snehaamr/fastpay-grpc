@@ -1,9 +1,12 @@
 package fastpay.ledger;
 
 import fastpay.proto.TransactionRequest;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
@@ -24,6 +27,13 @@ class InMemoryLedgerTest {
     @BeforeEach
     void setUp() {
         ledger = new InMemoryLedger();
+    }
+
+    @AfterEach
+    void tearDown() {
+        if (ledger != null) {
+            ledger.close();
+        }
     }
 
     @Test
@@ -145,6 +155,26 @@ class InMemoryLedgerTest {
         assertEquals(transfers, ledger.listPayments("ACC-111", 100).size());
         assertJournalBalances("ACC-111");
         assertJournalBalances("ACC-222");
+    }
+
+    @Test
+    void persistsAcrossReopen() throws Exception {
+        Path db = Files.createTempFile("fastpay", ".db");
+        try {
+            try (InMemoryLedger first = new InMemoryLedger(db)) {
+                first.submit(request("txn-durable", "ACC-111", "ACC-222", 2500));
+                assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS - 2500, first.balanceCents("ACC-111"));
+            }
+            try (InMemoryLedger second = new InMemoryLedger(db)) {
+                assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS - 2500, second.balanceCents("ACC-111"));
+                assertTrue(second.find("txn-durable").isPresent());
+                assertTrue(second.find("txn-durable").get().success());
+            }
+        } finally {
+            Files.deleteIfExists(db);
+            Files.deleteIfExists(Path.of(db.toString() + "-wal"));
+            Files.deleteIfExists(Path.of(db.toString() + "-shm"));
+        }
     }
 
     private void assertJournalBalances(String accountId) {

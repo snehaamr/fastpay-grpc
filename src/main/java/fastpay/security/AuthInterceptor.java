@@ -1,5 +1,6 @@
 package fastpay.security;
 
+import io.grpc.Contexts;
 import io.grpc.Metadata;
 import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
@@ -7,10 +8,14 @@ import io.grpc.ServerInterceptor;
 import io.grpc.Status;
 
 public final class AuthInterceptor implements ServerInterceptor {
-    private final String expectedToken;
+    private final TokenStore tokens;
 
-    public AuthInterceptor(String expectedToken) {
-        this.expectedToken = expectedToken;
+    public AuthInterceptor(TokenStore tokens) {
+        this.tokens = tokens;
+    }
+
+    public AuthInterceptor(String paymentsToken) {
+        this(TokenStore.seeded(paymentsToken, Auth.ADMIN_TOKEN));
     }
 
     @Override
@@ -19,16 +24,17 @@ public final class AuthInterceptor implements ServerInterceptor {
             Metadata headers,
             ServerCallHandler<ReqT, RespT> next
     ) {
-        if (expectedToken == null || expectedToken.isBlank()) {
-            return next.startCall(call, headers);
-        }
         String value = headers.get(Auth.AUTHORIZATION);
-        if (!Auth.matches(value, expectedToken)) {
-            call.close(Status.UNAUTHENTICATED.withDescription(
-                    "missing or invalid authorization (expected Bearer " + expectedToken + ")"
-            ), new Metadata());
-            return new ServerCall.Listener<>() {};
-        }
-        return next.startCall(call, headers);
+        return tokens.authenticate(value)
+                .map(role -> {
+                    var ctx = io.grpc.Context.current().withValue(AuthContext.ROLE, role);
+                    return Contexts.interceptCall(ctx, call, headers, next);
+                })
+                .orElseGet(() -> {
+                    call.close(Status.UNAUTHENTICATED.withDescription(
+                            "missing or invalid authorization (Bearer pay-token or admin-token)"
+                    ), new Metadata());
+                    return new ServerCall.Listener<>() {};
+                });
     }
 }

@@ -57,7 +57,7 @@ class FastPayServiceImplTest {
         server = InProcessServerBuilder.forName(serverName)
                 .directExecutor()
                 .intercept(new ValidationInterceptor())
-                .intercept(new AuthInterceptor(Auth.DEFAULT_TOKEN))
+                .intercept(new AuthInterceptor(ledger.tokenStore()))
                 .addService(new FastPayServiceImpl(workerPool, ledger))
                 .build()
                 .start();
@@ -76,6 +76,9 @@ class FastPayServiceImplTest {
         }
         if (workerPool != null) {
             workerPool.shutdownNow();
+        }
+        if (ledger != null) {
+            ledger.close();
         }
     }
 
@@ -130,6 +133,16 @@ class FastPayServiceImplTest {
         } finally {
             raw.shutdownNow();
         }
+    }
+
+    @Test
+    void invalidTokenIsUnauthenticated() {
+        FastPayGrpc.FastPayBlockingStub bad = stubFor("not-a-real-token");
+        StatusRuntimeException ex = assertThrows(
+                StatusRuntimeException.class,
+                () -> bad.processTransaction(request("txn-badtok", "ACC-111", "ACC-222", 100))
+        );
+        assertEquals(Status.Code.UNAUTHENTICATED, ex.getStatus().getCode());
     }
 
     @Test
@@ -225,6 +238,23 @@ class FastPayServiceImplTest {
     }
 
     @Test
+    void paymentsTokenCannotListAllAccounts() {
+        StatusRuntimeException ex = assertThrows(
+                StatusRuntimeException.class,
+                () -> stub.listTransactions(ListTransactionsQuery.getDefaultInstance())
+        );
+        assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
+    }
+
+    @Test
+    void adminTokenCanListAllAccounts() {
+        FastPayGrpc.FastPayBlockingStub admin = stubFor(Auth.ADMIN_TOKEN);
+        stub.processTransaction(request("txn-admin-list", "ACC-111", "ACC-222", 100));
+        ListTransactionsView view = admin.listTransactions(ListTransactionsQuery.newBuilder().setLimit(50).build());
+        assertTrue(view.getPaymentsCount() >= 1);
+    }
+
+    @Test
     void liveStreamFlagsAmountOverThreshold() throws Exception {
         restartWithFraud(new FraudGuard(500, 50, 10_000));
         CountDownLatch latch = new CountDownLatch(1);
@@ -296,7 +326,7 @@ class FastPayServiceImplTest {
         server = InProcessServerBuilder.forName(serverName)
                 .directExecutor()
                 .intercept(new ValidationInterceptor())
-                .intercept(new AuthInterceptor(Auth.DEFAULT_TOKEN))
+                .intercept(new AuthInterceptor(ledger.tokenStore()))
                 .addService(new FastPayServiceImpl(workerPool, ledger, guard))
                 .build()
                 .start();
@@ -311,6 +341,14 @@ class FastPayServiceImplTest {
         );
         stub = FastPayGrpc.newBlockingStub(authed).withDeadlineAfter(5, TimeUnit.SECONDS);
         asyncStub = FastPayGrpc.newStub(authed).withDeadlineAfter(15, TimeUnit.SECONDS);
+    }
+
+    private FastPayGrpc.FastPayBlockingStub stubFor(String token) {
+        Channel authed = ClientInterceptors.intercept(
+                channel,
+                MetadataUtils.newAttachHeadersInterceptor(Auth.metadata(token))
+        );
+        return FastPayGrpc.newBlockingStub(authed).withDeadlineAfter(5, TimeUnit.SECONDS);
     }
 
     private static TransactionRequest request(String id, String from, String to, long amountCents) {
