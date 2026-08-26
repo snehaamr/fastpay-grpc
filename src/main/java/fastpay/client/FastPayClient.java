@@ -6,9 +6,14 @@ import fastpay.proto.AccountView;
 import fastpay.proto.FastPayGrpc;
 import fastpay.proto.TransactionRequest;
 import fastpay.proto.TransactionResponse;
+import fastpay.security.Auth;
+import fastpay.security.RuntimeConfig;
+import fastpay.security.Tls;
 import fastpay.server.FastPayServer;
+import io.grpc.ClientInterceptors;
 import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
+import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
+import io.grpc.stub.MetadataUtils;
 import io.grpc.stub.StreamObserver;
 
 import java.io.IOException;
@@ -22,12 +27,24 @@ public class FastPayClient {
     private final FastPayGrpc.FastPayBlockingStub blockingStub;
     private final FastPayGrpc.FastPayStub asyncStub;
 
-    public FastPayClient(String host, int port) {
-        this.channel = ManagedChannelBuilder.forAddress(host, port)
-                .usePlaintext()
-                .build();
-        this.blockingStub = FastPayGrpc.newBlockingStub(channel);
-        this.asyncStub = FastPayGrpc.newStub(channel);
+    public FastPayClient(String host, int port) throws IOException {
+        this(host, port, RuntimeConfig.plaintext());
+    }
+
+    public FastPayClient(String host, int port, RuntimeConfig config) throws IOException {
+        NettyChannelBuilder builder = NettyChannelBuilder.forAddress(host, port);
+        if (config.tls()) {
+            builder.sslContext(Tls.clientContext(config.trustCert()));
+        } else {
+            builder.usePlaintext();
+        }
+        ManagedChannel raw = builder.build();
+        this.channel = ClientInterceptors.intercept(
+                raw,
+                MetadataUtils.newAttachHeadersInterceptor(Auth.metadata(config.authToken()))
+        );
+        this.blockingStub = FastPayGrpc.newBlockingStub(channel).withDeadlineAfter(5, TimeUnit.SECONDS);
+        this.asyncStub = FastPayGrpc.newStub(channel).withDeadlineAfter(15, TimeUnit.SECONDS);
     }
 
     public void shutdown() throws InterruptedException {
@@ -39,15 +56,17 @@ public class FastPayClient {
                 .setTransactionId("txn-123")
                 .setAccountFrom("ACC-111")
                 .setAccountTo("ACC-222")
-                .setAmount(250.75)
+                .setAmountCents(25075)
                 .setCurrency("USD")
                 .setClientTimestampNanos(System.nanoTime())
                 .build();
 
         TransactionResponse resp = blockingStub.processTransaction(req);
-        System.out.println("Unary response: " + resp.getMessage() + " replayed=" + resp.getReplayed());
+        System.out.println("Unary response: " + resp.getMessage()
+                + " status=" + resp.getStatus() + " replayed=" + resp.getReplayed());
         TransactionResponse replay = blockingStub.processTransaction(req);
-        System.out.println("Idempotent replay: " + replay.getMessage() + " replayed=" + replay.getReplayed());
+        System.out.println("Idempotent replay: " + replay.getMessage()
+                + " status=" + replay.getStatus() + " replayed=" + replay.getReplayed());
         printAccount("ACC-111");
         printAccount("ACC-222");
     }
@@ -63,7 +82,7 @@ public class FastPayClient {
         StreamObserver<TransactionRequest> reqObs = asyncStub.liveTransactions(new StreamObserver<>() {
             @Override
             public void onNext(TransactionResponse resp) {
-                System.out.println("Live response: " + resp.getMessage());
+                System.out.println("Live response: " + resp.getMessage() + " status=" + resp.getStatus());
             }
 
             @Override
@@ -83,7 +102,7 @@ public class FastPayClient {
                     .setTransactionId("txn-" + i)
                     .setAccountFrom("ACC-AAA")
                     .setAccountTo("ACC-BBB")
-                    .setAmount(100 + i)
+                    .setAmountCents(10_000 + (i * 100L))
                     .setCurrency("USD")
                     .setClientTimestampNanos(System.nanoTime())
                     .build();
@@ -93,20 +112,21 @@ public class FastPayClient {
         latch.await(5, TimeUnit.SECONDS);
     }
 
-    /**
-     * Runs the sample unary + live calls. If {@code startLocalServerIfNeeded} is true and
-     * nothing accepts connections on {@code port}, starts an in-process server first.
-     */
     public static void runSample(String host, int port, boolean startLocalServerIfNeeded) throws Exception {
+        runSample(host, port, startLocalServerIfNeeded, RuntimeConfig.plaintext());
+    }
+
+    public static void runSample(String host, int port, boolean startLocalServerIfNeeded, RuntimeConfig config)
+            throws Exception {
         FastPayServer localServer = null;
         int targetPort = port;
         if (startLocalServerIfNeeded && !isReachable(host, port)) {
-            localServer = new FastPayServer(port);
+            localServer = new FastPayServer(port, config);
             localServer.start();
             targetPort = localServer.getPort();
             System.out.println("No server was listening; started a local FastPay server for this client run.");
         }
-        FastPayClient client = new FastPayClient(host, targetPort);
+        FastPayClient client = new FastPayClient(host, targetPort, config);
         try {
             client.runUnary();
             client.runBidi();
@@ -128,6 +148,7 @@ public class FastPayClient {
     }
 
     public static void main(String[] args) throws Exception {
-        runSample("127.0.0.1", FastPayServer.DEFAULT_PORT, true);
+        RuntimeConfig config = RuntimeConfig.fromEnv();
+        runSample("127.0.0.1", FastPayServer.DEFAULT_PORT, true, config);
     }
 }

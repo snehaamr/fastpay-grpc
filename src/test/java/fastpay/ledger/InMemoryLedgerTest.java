@@ -31,7 +31,7 @@ class InMemoryLedgerTest {
         long fromBefore = ledger.balanceCents("ACC-111");
         long toBefore = ledger.balanceCents("ACC-222");
 
-        SubmitResult result = ledger.submit(request("txn-ledger-1", "ACC-111", "ACC-222", 250.75));
+        SubmitResult result = ledger.submit(request("txn-ledger-1", "ACC-111", "ACC-222", 25075));
 
         assertTrue(result.transaction().success());
         assertFalse(result.replayed());
@@ -45,8 +45,8 @@ class InMemoryLedgerTest {
     @Test
     void duplicateTransactionIdDoesNotDoublePost() {
         long fromBefore = ledger.balanceCents("ACC-111");
-        SubmitResult first = ledger.submit(request("txn-dup", "ACC-111", "ACC-222", 10.00));
-        SubmitResult second = ledger.submit(request("txn-dup", "ACC-111", "ACC-222", 10.00));
+        SubmitResult first = ledger.submit(request("txn-dup", "ACC-111", "ACC-222", 1000));
+        SubmitResult second = ledger.submit(request("txn-dup", "ACC-111", "ACC-222", 1000));
 
         assertTrue(first.transaction().success());
         assertFalse(first.replayed());
@@ -60,10 +60,10 @@ class InMemoryLedgerTest {
     @Test
     void insufficientFundsIsIdempotentFailureAndSkipsJournal() {
         int journalBefore = ledger.journalEntries("ACC-POOR").size();
-        SubmitResult first = ledger.submit(request("txn-poor", "ACC-POOR", "ACC-222", 5.00));
+        SubmitResult first = ledger.submit(request("txn-poor", "ACC-POOR", "ACC-222", 500));
         long poorAfter = ledger.balanceCents("ACC-POOR");
         long destAfter = ledger.balanceCents("ACC-222");
-        SubmitResult second = ledger.submit(request("txn-poor", "ACC-POOR", "ACC-222", 5.00));
+        SubmitResult second = ledger.submit(request("txn-poor", "ACC-POOR", "ACC-222", 500));
 
         assertFalse(first.transaction().success());
         assertTrue(second.replayed());
@@ -79,7 +79,7 @@ class InMemoryLedgerTest {
     void rejectsUnknownAccount() {
         InvalidTransactionException ex = assertThrows(
                 InvalidTransactionException.class,
-                () -> ledger.submit(request("txn-unknown", "ACC-MISSING", "ACC-222", 1.00))
+                () -> ledger.submit(request("txn-unknown", "ACC-MISSING", "ACC-222", 100))
         );
         assertTrue(ex.getMessage().contains("unknown account"));
         assertTrue(ledger.find("txn-unknown").isEmpty());
@@ -89,7 +89,7 @@ class InMemoryLedgerTest {
     void rejectsSameAccountTransfer() {
         assertThrows(
                 InvalidTransactionException.class,
-                () -> ledger.submit(request("txn-self", "ACC-111", "ACC-111", 1.00))
+                () -> ledger.submit(request("txn-self", "ACC-111", "ACC-111", 100))
         );
     }
 
@@ -103,7 +103,7 @@ class InMemoryLedgerTest {
                 .mapToObj(i -> pool.submit(() -> {
                     start.await();
                     try {
-                        return ledger.submit(request("txn-race", "ACC-111", "ACC-222", 25.00));
+                        return ledger.submit(request("txn-race", "ACC-111", "ACC-222", 2500));
                     } finally {
                         done.countDown();
                     }
@@ -134,7 +134,7 @@ class InMemoryLedgerTest {
         ExecutorService pool = Executors.newFixedThreadPool(16);
         List<Future<SubmitResult>> futures = IntStream.range(0, transfers)
                 .mapToObj(i -> pool.submit(() ->
-                        ledger.submit(request("txn-par-" + i, "ACC-111", "ACC-222", 1.00))))
+                        ledger.submit(request("txn-par-" + i, "ACC-111", "ACC-222", 100))))
                 .toList();
         for (Future<SubmitResult> future : futures) {
             assertTrue(future.get(10, TimeUnit.SECONDS).transaction().success());
@@ -154,12 +154,12 @@ class InMemoryLedgerTest {
         assertEquals(ledger.balanceCents(accountId), journalSum);
     }
 
-    private static TransactionRequest request(String id, String from, String to, double amount) {
+    private static TransactionRequest request(String id, String from, String to, long amountCents) {
         return TransactionRequest.newBuilder()
                 .setTransactionId(id)
                 .setAccountFrom(from)
                 .setAccountTo(to)
-                .setAmount(amount)
+                .setAmountCents(amountCents)
                 .setCurrency("USD")
                 .build();
     }

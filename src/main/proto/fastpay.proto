@@ -7,30 +7,28 @@ option java_package = "fastpay.proto";
 option java_outer_classname = "FastPayProto";
 
 service FastPay {
-  // Unary: process a single payment.
   rpc ProcessTransaction (TransactionRequest) returns (TransactionResponse);
-
-  // Client streaming: bulk payment upload, one summary response.
   rpc UploadTransactions (stream TransactionRequest) returns (TransactionResponse);
-
-  // Server streaming: status updates for a single payment.
   rpc TransactionStatus (TransactionRequest) returns (stream TransactionResponse);
-
-  // Bidirectional streaming: live payment processing.
   rpc LiveTransactions (stream TransactionRequest) returns (stream TransactionResponse);
-
-  // Unary: current ledger balance for an account.
   rpc GetAccount (AccountQuery) returns (AccountView);
-
-  // Unary: posted payments, optionally filtered by account.
   rpc ListTransactions (ListTransactionsQuery) returns (ListTransactionsView);
+}
+
+enum PaymentStatus {
+  PAYMENT_STATUS_UNSPECIFIED = 0;
+  PENDING = 1;
+  AUTHORIZED = 2;
+  SETTLED = 3;
+  FAILED = 4;
+  FLAGGED = 5;
 }
 
 message TransactionRequest {
   string transaction_id = 1;
   string account_from = 2;
   string account_to = 3;
-  double amount = 4;
+  int64 amount_cents = 4;
   string currency = 5;
   int64 client_timestamp_nanos = 6;
 }
@@ -42,6 +40,8 @@ message TransactionResponse {
   int64 processing_nanos = 4;
   int64 server_timestamp_nanos = 5;
   bool replayed = 6;
+  PaymentStatus status = 7;
+  int64 amount_cents = 8;
 }
 
 message AccountQuery {
@@ -71,4 +71,5 @@ message PaymentRecord {
   string currency = 5;
   bool success = 6;
   string message = 7;
+  PaymentStatus status = 8;
 }

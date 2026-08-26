@@ -1,5 +1,6 @@
 package fastpay.ledger;
 
+import fastpay.proto.PaymentStatus;
 import fastpay.proto.TransactionRequest;
 
 import java.util.ArrayList;
@@ -111,8 +112,36 @@ public final class InMemoryLedger {
         return new SubmitResult(posted, replayed[0]);
     }
 
+    /**
+     * Records a failed/flagged outcome without moving money. Duplicate ids replay.
+     */
+    public SubmitResult reject(TransactionRequest request, PaymentStatus status, String message) {
+        validate(request);
+        String transactionId = request.getTransactionId();
+        boolean[] replayed = {false};
+        PostedTransaction posted = byTransactionId.compute(transactionId, (id, existing) -> {
+            if (existing != null) {
+                replayed[0] = true;
+                return existing;
+            }
+            PostedTransaction rejected = new PostedTransaction(
+                    request.getTransactionId(),
+                    request.getAccountFrom(),
+                    request.getAccountTo(),
+                    request.getAmountCents(),
+                    request.getCurrency(),
+                    false,
+                    message,
+                    status
+            );
+            recordHistory(rejected);
+            return rejected;
+        });
+        return new SubmitResult(posted, replayed[0]);
+    }
+
     private PostedTransaction postNew(TransactionRequest request) {
-        long cents = toCents(request.getAmount());
+        long cents = request.getAmountCents();
         String fromId = request.getAccountFrom();
         String toId = request.getAccountTo();
         Account from = requireAccount(fromId);
@@ -131,7 +160,8 @@ public final class InMemoryLedger {
                             request.getCurrency(),
                             false,
                             "Insufficient funds: " + fromId + " has " + formatAmount(from.balanceCents)
-                                    + " " + request.getCurrency() + ", need " + formatAmount(cents)
+                                    + " " + request.getCurrency() + ", need " + formatAmount(cents),
+                            PaymentStatus.FAILED
                     );
                     recordHistory(rejected);
                     return rejected;
@@ -146,7 +176,8 @@ public final class InMemoryLedger {
                         request.getCurrency(),
                         true,
                         "Processed " + formatAmount(cents) + " " + request.getCurrency()
-                                + " from " + fromId + " to " + toId
+                                + " from " + fromId + " to " + toId,
+                        PaymentStatus.SETTLED
                 );
                 synchronized (journal) {
                     journal.add(new JournalEntry(posted.transactionId(), fromId, -cents, posted.currency()));
@@ -164,7 +195,7 @@ public final class InMemoryLedger {
         }
     }
 
-    static void validate(TransactionRequest request) {
+    public static void validate(TransactionRequest request) {
         if (request.getTransactionId().isBlank()) {
             throw new InvalidTransactionException("transaction_id is required");
         }
@@ -180,17 +211,9 @@ public final class InMemoryLedger {
         if (request.getCurrency().isBlank()) {
             throw new InvalidTransactionException("currency is required");
         }
-        double amount = request.getAmount();
-        if (!Double.isFinite(amount) || amount <= 0) {
-            throw new InvalidTransactionException("amount must be a positive finite number");
+        if (request.getAmountCents() <= 0) {
+            throw new InvalidTransactionException("amount_cents must be a positive integer");
         }
-        if (toCents(amount) <= 0) {
-            throw new InvalidTransactionException("amount is too small to represent in cents");
-        }
-    }
-
-    static long toCents(double amount) {
-        return Math.round(amount * 100.0d);
     }
 
     public static String formatAmount(long cents) {

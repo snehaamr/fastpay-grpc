@@ -1,5 +1,7 @@
 package fastpay.ledger;
 
+import fastpay.proto.PaymentStatus;
+
 public record PostedTransaction(
         String transactionId,
         String accountFrom,
@@ -7,6 +9,7 @@ public record PostedTransaction(
         long amountCents,
         String currency,
         boolean success,
-        String message
+        String message,
+        PaymentStatus status
 ) {
 }
