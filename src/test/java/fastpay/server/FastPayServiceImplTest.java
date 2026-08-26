@@ -13,6 +13,7 @@ import fastpay.proto.TransactionResponse;
 import fastpay.security.Auth;
 import fastpay.security.AuthInterceptor;
 import fastpay.security.ValidationInterceptor;
+import io.grpc.Channel;
 import io.grpc.ClientInterceptors;
 import io.grpc.ManagedChannel;
 import io.grpc.Server;
@@ -60,9 +61,7 @@ class FastPayServiceImplTest {
                 .addService(new FastPayServiceImpl(workerPool, ledger))
                 .build()
                 .start();
-        channel = authedChannel(serverName);
-        stub = FastPayGrpc.newBlockingStub(channel).withDeadlineAfter(5, TimeUnit.SECONDS);
-        asyncStub = FastPayGrpc.newStub(channel).withDeadlineAfter(15, TimeUnit.SECONDS);
+        bindAuthedStubs(serverName);
     }
 
     @AfterEach
@@ -301,16 +300,17 @@ class FastPayServiceImplTest {
                 .addService(new FastPayServiceImpl(workerPool, ledger, guard))
                 .build()
                 .start();
-        channel = authedChannel(serverName);
-        stub = FastPayGrpc.newBlockingStub(channel).withDeadlineAfter(5, TimeUnit.SECONDS);
-        asyncStub = FastPayGrpc.newStub(channel).withDeadlineAfter(15, TimeUnit.SECONDS);
+        bindAuthedStubs(serverName);
     }
 
-    private static ManagedChannel authedChannel(String name) {
-        return ClientInterceptors.intercept(
-                InProcessChannelBuilder.forName(name).directExecutor().build(),
+    private void bindAuthedStubs(String name) {
+        channel = InProcessChannelBuilder.forName(name).directExecutor().build();
+        Channel authed = ClientInterceptors.intercept(
+                channel,
                 MetadataUtils.newAttachHeadersInterceptor(Auth.metadata(Auth.DEFAULT_TOKEN))
         );
+        stub = FastPayGrpc.newBlockingStub(authed).withDeadlineAfter(5, TimeUnit.SECONDS);
+        asyncStub = FastPayGrpc.newStub(authed).withDeadlineAfter(15, TimeUnit.SECONDS);
     }
 
     private static TransactionRequest request(String id, String from, String to, long amountCents) {

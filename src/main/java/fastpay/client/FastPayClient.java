@@ -10,8 +10,10 @@ import fastpay.security.Auth;
 import fastpay.security.RuntimeConfig;
 import fastpay.security.Tls;
 import fastpay.server.FastPayServer;
+import io.grpc.Channel;
 import io.grpc.ClientInterceptors;
 import io.grpc.ManagedChannel;
+import io.grpc.Metadata;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import io.grpc.stub.MetadataUtils;
 import io.grpc.stub.StreamObserver;
@@ -38,13 +40,13 @@ public class FastPayClient {
         } else {
             builder.usePlaintext();
         }
-        ManagedChannel raw = builder.build();
-        this.channel = ClientInterceptors.intercept(
-                raw,
+        this.channel = builder.build();
+        Channel authed = ClientInterceptors.intercept(
+                channel,
                 MetadataUtils.newAttachHeadersInterceptor(Auth.metadata(config.authToken()))
         );
-        this.blockingStub = FastPayGrpc.newBlockingStub(channel).withDeadlineAfter(5, TimeUnit.SECONDS);
-        this.asyncStub = FastPayGrpc.newStub(channel).withDeadlineAfter(15, TimeUnit.SECONDS);
+        this.blockingStub = FastPayGrpc.newBlockingStub(authed).withDeadlineAfter(5, TimeUnit.SECONDS);
+        this.asyncStub = FastPayGrpc.newStub(authed).withDeadlineAfter(15, TimeUnit.SECONDS);
     }
 
     public void shutdown() throws InterruptedException {
