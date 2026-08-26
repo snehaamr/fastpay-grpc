@@ -11,6 +11,33 @@ public final class Tls {
     private Tls() {
     }
 
+    public static void ensureLocalhostCerts(Path certChain, Path privateKey, Path trustCert) throws IOException {
+        if (Files.isRegularFile(certChain) && Files.isRegularFile(privateKey)) {
+            return;
+        }
+        Files.createDirectories(certChain.getParent() == null ? Path.of(".") : certChain.getParent());
+        Process process = new ProcessBuilder(
+                "openssl", "req", "-x509", "-newkey", "rsa:2048", "-sha256", "-days", "365",
+                "-nodes",
+                "-keyout", privateKey.toString(),
+                "-out", certChain.toString(),
+                "-subj", "/CN=localhost",
+                "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1"
+        ).inheritIO().start();
+        try {
+            int code = process.waitFor();
+            if (code != 0) {
+                throw new IOException("openssl failed with exit " + code + " (install openssl to enable TLS)");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("openssl interrupted", e);
+        }
+        if (trustCert != null && !Files.isRegularFile(trustCert)) {
+            Files.copy(certChain, trustCert);
+        }
+    }
+
     public static SslContext serverContext(Path certChain, Path privateKey) throws IOException {
         requireReadable(certChain, "FASTPAY_CERT");
         requireReadable(privateKey, "FASTPAY_KEY");

@@ -10,3 +10,7 @@ out/
 .settings/
 bin/
 *.log
+data/
+*.db
+certs/*.key
+

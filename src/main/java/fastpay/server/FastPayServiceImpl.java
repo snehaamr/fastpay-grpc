@@ -15,6 +15,8 @@ import fastpay.proto.PaymentRecord;
 import fastpay.proto.PaymentStatus;
 import fastpay.proto.TransactionRequest;
 import fastpay.proto.TransactionResponse;
+import fastpay.security.AuthContext;
+import fastpay.security.Role;
 import io.grpc.Context;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
@@ -227,6 +229,13 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
 
     @Override
     public void listTransactions(ListTransactionsQuery req, StreamObserver<ListTransactionsView> respObs) {
+        Role role = AuthContext.currentRole();
+        if (req.getAccountId().isBlank() && role != Role.ADMIN) {
+            respObs.onError(Status.PERMISSION_DENIED
+                    .withDescription("admin token required to list all payments")
+                    .asRuntimeException());
+            return;
+        }
         ListTransactionsView.Builder view = ListTransactionsView.newBuilder();
         for (PostedTransaction payment : ledger.listPayments(req.getAccountId(), req.getLimit())) {
             view.addPayments(PaymentRecord.newBuilder()

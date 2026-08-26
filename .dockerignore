@@ -4,3 +4,7 @@ build
 .idea
 *.iml
 .cursor
+data
+*.db
+certs/*.key
+

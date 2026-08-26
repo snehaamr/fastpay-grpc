@@ -1,5 +1,8 @@
-Demo-only self-signed certificate for localhost / 127.0.0.1.
+TLS material for local/dev only.
 
-Do not use in production. Regenerate with:
+Private keys (`*.key`) are gitignored and generated on demand:
 
     scripts/gen-certs.sh
+    FASTPAY_TLS=true ./gradlew run
+
+Do not commit production certificates. Use a real CA (or your company’s PKI) outside this repo.

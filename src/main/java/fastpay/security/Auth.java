@@ -3,7 +3,10 @@ package fastpay.security;
 import io.grpc.Metadata;
 
 public final class Auth {
-    public static final String DEFAULT_TOKEN = "demo-token";
+    public static final String PAYMENTS_TOKEN = "pay-token";
+    public static final String ADMIN_TOKEN = "admin-token";
+    /** Default client token (payments role). */
+    public static final String DEFAULT_TOKEN = PAYMENTS_TOKEN;
     public static final Metadata.Key<String> AUTHORIZATION =
             Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
 
@@ -18,12 +21,5 @@ public final class Auth {
         Metadata headers = new Metadata();
         headers.put(AUTHORIZATION, bearer(token));
         return headers;
-    }
-
-    public static boolean matches(String headerValue, String expectedToken) {
-        if (headerValue == null || expectedToken == null || expectedToken.isBlank()) {
-            return false;
-        }
-        return bearer(expectedToken).equals(headerValue) || expectedToken.equals(headerValue);
     }
 }
