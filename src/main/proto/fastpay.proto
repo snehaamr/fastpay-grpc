@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package fastpay;
+
+option java_multiple_files = true;
+option java_package = "fastpay.proto";
+option java_outer_classname = "FastPayProto";
+
+service FastPay {
+  rpc ProcessTransaction (TransactionRequest) returns (TransactionResponse);
+  rpc UploadTransactions (stream TransactionRequest) returns (TransactionResponse);
+  rpc TransactionStatus (TransactionRequest) returns (stream TransactionResponse);
+  rpc LiveTransactions (stream TransactionRequest) returns (stream TransactionResponse);
+  rpc GetAccount (AccountQuery) returns (AccountView);
+  rpc ListTransactions (ListTransactionsQuery) returns (ListTransactionsView);
+}
+
+enum PaymentStatus {
+  PAYMENT_STATUS_UNSPECIFIED = 0;
+  PENDING = 1;
+  AUTHORIZED = 2;
+  SETTLED = 3;
+  FAILED = 4;
+  FLAGGED = 5;
+}
+
+message TransactionRequest {
+  string transaction_id = 1;
+  string account_from = 2;
+  string account_to = 3;
+  int64 amount_cents = 4;
+  string currency = 5;
+  int64 client_timestamp_nanos = 6;
+}
+
+message TransactionResponse {
+  string transaction_id = 1;
+  bool success = 2;
+  string message = 3;
+  int64 processing_nanos = 4;
+  int64 server_timestamp_nanos = 5;
+  bool replayed = 6;
+  PaymentStatus status = 7;
+  int64 amount_cents = 8;
+}
+
+message AccountQuery {
+  string account_id = 1;
+}
+
+message AccountView {
+  string account_id = 1;
+  int64 balance_cents = 2;
+  string currency = 3;
+}
+
+message ListTransactionsQuery {
+  string account_id = 1;
+  int32 limit = 2;
+}
+
+message ListTransactionsView {
+  repeated PaymentRecord payments = 1;
+}
+
+message PaymentRecord {
+  string transaction_id = 1;
+  string account_from = 2;
+  string account_to = 3;
+  int64 amount_cents = 4;
+  string currency = 5;
+  bool success = 6;
+  string message = 7;
+  PaymentStatus status = 8;
+}

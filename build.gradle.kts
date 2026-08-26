@@ -1,61 +1,107 @@
-import com.google.protobuf.gradle.*
+import com.google.protobuf.gradle.id
 
 plugins {
-    `java`
-    id("com.google.protobuf") version "0.9.4" // keep plugin modern
-    id("application")
+    java
+    idea
+    application
+    id("com.google.protobuf") version "0.9.4"
 }
 
 group = "com.example"
 version = "0.1.0"
-java.sourceCompatibility = JavaVersion.VERSION_17
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
 
 repositories {
     mavenCentral()
 }
 
-val grpcVersion = "1.57.0"        // pick reasonably recent gRPC Java
-val protobufVersion = "3.24.3"   // example; plugin controls protoc
-val nettyVersion = "4.1.99.Final" // netty version aligned with gRPC
+val grpcVersion = "1.68.2"
+val protobufVersion = "3.25.5"
 
 dependencies {
-    implementation("io.grpc:grpc-netty:${grpcVersion}")
+    // shaded Netty: ServerBuilder plus the historical NettyServerBuilder import
+    implementation("io.grpc:grpc-netty-shaded:${grpcVersion}")
     implementation("io.grpc:grpc-protobuf:${grpcVersion}")
     implementation("io.grpc:grpc-stub:${grpcVersion}")
-
-    // For optional native transport (Epoll) for Linux high-perf
-    runtimeOnly("io.netty:netty-transport-native-epoll:${nettyVersion}:linux-x86_64") {
-        because("use native epoll transport on Linux for lower latency and higher throughput")
-    }
-
     implementation("com.google.protobuf:protobuf-java:${protobufVersion}")
+    // Required by generated gRPC stubs on Java 9+
+    implementation("javax.annotation:javax.annotation-api:1.3.2")
 
-    // logging
-    implementation("org.slf4j:slf4j-api:2.0.9")
-    runtimeOnly("org.slf4j:slf4j-simple:2.0.9")
+    implementation("org.slf4j:slf4j-api:2.0.16")
+    runtimeOnly("org.slf4j:slf4j-simple:2.0.16")
 
-    testImplementation("org.junit.jupiter:junit-jupiter:5.10.0")
+    testImplementation("org.junit.jupiter:junit-jupiter:5.10.3")
+    testImplementation("io.grpc:grpc-inprocess:${grpcVersion}")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
 application {
-    mainClass.set("fastpay.server.FastPayServer")
+    val configuredMain = findProperty("mainClass") as String?
+    mainClass.set(configuredMain ?: "fastpay.server.FastPayServer")
 }
 
 protobuf {
-    protoc { artifact = "com.google.protobuf:protoc:${protobufVersion}" }
+    protoc {
+        artifact = "com.google.protobuf:protoc:${protobufVersion}"
+    }
     plugins {
-        id("grpc") { artifact = "io.grpc:protoc-gen-grpc-java:${grpcVersion}" }
+        id("grpc") {
+            artifact = "io.grpc:protoc-gen-grpc-java:${grpcVersion}"
+        }
     }
     generateProtoTasks {
-        all().forEach {
-            it.plugins {
-                id("grpc")
+        ofSourceSet("main").forEach { task ->
+            task.plugins {
+                // Braces are required or the grpc plugin is not applied.
+                id("grpc") { }
             }
         }
     }
 }
 
-tasks.withType<JavaCompile> {
+tasks.named("compileJava") {
+    dependsOn("generateProto")
+}
+
+tasks.named("compileTestJava") {
+    dependsOn("generateProto")
+}
+
+tasks.withType<JavaCompile>().configureEach {
     options.encoding = "UTF-8"
     options.compilerArgs.addAll(listOf("-parameters"))
+}
+
+tasks.test {
+    useJUnitPlatform()
+}
+
+fun JavaExec.allowDeprecatedUnsafeOnNewJdks() {
+    if (JavaVersion.current().majorVersion.toInt() >= 24) {
+        jvmArgs("--sun-misc-unsafe-memory-access=allow")
+    }
+}
+
+tasks.named<JavaExec>("run") {
+    allowDeprecatedUnsafeOnNewJdks()
+}
+
+tasks.register<JavaExec>("runClient") {
+    group = "application"
+    description = "Run the sample client; starts a local server on 6565 if none is listening"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("fastpay.client.FastPayClient")
+    allowDeprecatedUnsafeOnNewJdks()
+}
+
+tasks.register<JavaExec>("runDemo") {
+    group = "application"
+    description = "Same as runClient: start a server if needed, run the sample, then shut down"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("fastpay.client.FastPayDemo")
+    allowDeprecatedUnsafeOnNewJdks()
 }
