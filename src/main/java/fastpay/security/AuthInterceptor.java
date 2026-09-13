@@ -24,6 +24,9 @@ public final class AuthInterceptor implements ServerInterceptor {
             Metadata headers,
             ServerCallHandler<ReqT, RespT> next
     ) {
+        if (isPublicService(call.getMethodDescriptor().getServiceName())) {
+            return next.startCall(call, headers);
+        }
         String value = headers.get(Auth.AUTHORIZATION);
         return tokens.authenticate(value)
                 .map(role -> {
@@ -36,5 +39,11 @@ public final class AuthInterceptor implements ServerInterceptor {
                     ), new Metadata());
                     return new ServerCall.Listener<>() {};
                 });
+    }
+
+    static boolean isPublicService(String serviceName) {
+        return "grpc.health.v1.Health".equals(serviceName)
+                || "grpc.reflection.v1alpha.ServerReflection".equals(serviceName)
+                || "grpc.reflection.v1.ServerReflection".equals(serviceName);
     }
 }

@@ -10,6 +10,7 @@ import io.grpc.Server;
 import io.grpc.health.v1.HealthCheckResponse;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import io.grpc.protobuf.services.HealthStatusManager;
+import io.grpc.protobuf.services.ProtoReflectionService;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -26,6 +27,7 @@ public class FastPayServer {
     private final ScheduledExecutorService workerPool;
     private final Server server;
     private final InMemoryLedger ledger;
+    private final HealthStatusManager health;
     private final boolean closeLedger;
     private final AtomicBoolean stopped = new AtomicBoolean(false);
 
@@ -53,16 +55,20 @@ public class FastPayServer {
         this.closeLedger = closeLedger;
         int threads = Math.max(4, Runtime.getRuntime().availableProcessors() * 2);
         this.workerPool = Executors.newScheduledThreadPool(threads);
-        HealthStatusManager health = new HealthStatusManager();
+        this.health = new HealthStatusManager();
         health.setStatus("", HealthCheckResponse.ServingStatus.SERVING);
         health.setStatus("fastpay.FastPay", HealthCheckResponse.ServingStatus.SERVING);
         NettyServerBuilder builder = NettyServerBuilder.forAddress(new InetSocketAddress("0.0.0.0", port))
                 .addService(new FastPayServiceImpl(workerPool, ledger, fraudGuard))
                 .addService(health.getHealthService())
+                .addService(newReflectionService())
                 .intercept(new ValidationInterceptor())
                 .intercept(new AuthInterceptor(ledger.tokenStore()))
                 .maxInboundMessageSize(16 * 1024 * 1024)
-                .directExecutor();
+                .keepAliveTime(30, TimeUnit.SECONDS)
+                .keepAliveTimeout(10, TimeUnit.SECONDS)
+                .permitKeepAliveTime(5, TimeUnit.SECONDS)
+                .permitKeepAliveWithoutCalls(true);
         if (config.tls()) {
             Tls.ensureLocalhostCerts(config.cert(), config.key(), config.trustCert());
             builder.sslContext(Tls.serverContext(config.cert(), config.key()));
@@ -78,6 +84,11 @@ public class FastPayServer {
         return new InMemoryLedger(config.db(), config.paymentsToken(), config.adminToken());
     }
 
+    @SuppressWarnings("deprecation")
+    private static io.grpc.BindableService newReflectionService() {
+        return ProtoReflectionService.newInstance();
+    }
+
     public void start() throws IOException {
         server.start();
         System.out.println("FastPay gRPC server started on port " + getPort());
@@ -91,6 +102,8 @@ public class FastPayServer {
         if (!stopped.compareAndSet(false, true)) {
             return;
         }
+        health.setStatus("", HealthCheckResponse.ServingStatus.NOT_SERVING);
+        health.setStatus("fastpay.FastPay", HealthCheckResponse.ServingStatus.NOT_SERVING);
         server.shutdown();
         workerPool.shutdown();
         try {

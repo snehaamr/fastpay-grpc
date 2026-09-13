@@ -14,16 +14,17 @@ Upload batches of payments in one connection
 Useful for payroll systems or batch settlements
 
 Server streaming – Transaction status updates
-Receive multiple status updates for a single payment
+Look up a payment by `transaction_id` only (`TransactionQuery`)
 Example: initiated → authorized → settled → confirmed
 
 Bidirectional streaming – Live transactions
 Continuous two-way stream between client and server
 Perfect for trading platforms, fraud monitoring, or high-frequency payments
 
-In-memory ledger – debit the source account and credit the destination
+In-memory / SQLite ledger – debit the source account and credit the destination
 Amounts are `int64 amount_cents` on the wire (no floating-point money)
 `PaymentStatus`: PENDING → AUTHORIZED → SETTLED, or FAILED / FLAGGED
+Request `currency` must match both accounts (seeded accounts are `USD`)
 
 Idempotency – `transaction_id` is unique; a retry sets `replayed=true` and
 does not post a second transfer (including insufficient-funds and fraud flags)
@@ -31,10 +32,25 @@ does not post a second transfer (including insufficient-funds and fraud flags)
 Durable SQLite ledger – balances and payments survive process restart (`FASTPAY_DB`)
 Seeded demo accounts: ACC-111, ACC-222, ACC-AAA, ACC-BBB ($10,000.00) and ACC-POOR ($1.00)
 
+OpenAccount – create additional accounts (`opening_cents` of `0` means $10,000.00)
+
+RefundTransaction – reverse a settled payment back to the source account.
+Idempotent: default refund id is `refund:{transaction_id}`. Failed (NSF / flagged)
+payments cannot be refunded. A refund cannot be refunded.
+
+GetPayment / ListTransactions – inspect a payment or recent history (newest first),
+including `created_at_millis` and `refund_of`
+
+ListJournal – ADMIN-only double-entry audit trail (signed `delta_cents`)
+
 Auth – hashed API keys in SQLite with two roles:
-- `pay-token` (PAYMENTS): transfers, status, GetAccount, list one account
-- `admin-token` (ADMIN): also list all payments
+- `pay-token` (PAYMENTS): transfers, refunds, status, GetAccount, OpenAccount, list one account
+- `admin-token` (ADMIN): also list all payments and the journal
 Override with `FASTPAY_PAY_TOKEN` / `FASTPAY_ADMIN_TOKEN`
+
+Health and reflection – `grpc.health.v1.Health` and server reflection do **not**
+require a bearer token, so `grpc_health_probe` / `grpcurl` work without `-H`.
+The health status is set to `NOT_SERVING` before a graceful shutdown.
 
 TLS – private keys are **not** committed. `FASTPAY_TLS=true` generates localhost
 certs via openssl if `certs/server.key` is missing (`scripts/gen-certs.sh`).
@@ -61,7 +77,7 @@ Stubs in `fastpay.proto` are generated from `src/main/proto/fastpay.proto` by
 ```
 
 `runClient` (and `runDemo`) connect to `127.0.0.1:6565`. If nothing is listening,
-they start a temporary server, run the unary + live sample, then stop it.
+they start a temporary server, run unary + refund + bulk + live samples, then stop it.
 
 To keep a server up for `ghz` / `grpcurl` or a second terminal:
 
@@ -72,11 +88,28 @@ FASTPAY_TLS=true ./gradlew run
 FASTPAY_TLS=true ./gradlew runClient
 ```
 
+`grpcurl` can use reflection (no `--proto` file) because the server exposes it:
+
+```bash
+grpcurl -plaintext 127.0.0.1:6565 list
+grpcurl -plaintext -H 'authorization: Bearer pay-token' \
+  -d '{"transaction_id":"txn-curl","account_from":"ACC-111","account_to":"ACC-222","amount_cents":1000,"currency":"USD"}' \
+  127.0.0.1:6565 fastpay.FastPay/ProcessTransaction
+```
+
 Docker (Docker Desktop must be running first: `docker info` should succeed)
 
 Build creates an **image** named `fastpay` (Images tab). A **container** only
-appears after `docker run` (Containers tab). Use a name and `-d` so it stays
+appears after `docker run` / `docker compose up` (Containers tab). Use a name and `-d` so it stays
 listed; `--rm` deletes the container as soon as it exits.
+
+```bash
+docker compose up -d --build
+docker compose logs -f
+docker compose down
+```
+
+Or without Compose:
 
 ```bash
 docker build -t fastpay .
@@ -142,6 +175,7 @@ Real-World Use Cases
 
 Instant money transfers (like Zelle, Venmo, UPI)
 Payroll bulk uploads (corporates paying employees)
+Refunds and account opening for onboarding
 Real-time trading & settlements
 Fraud detection pipelines with streaming APIs
 Banking API integration (ACH, SEPA, SWIFT gateways)

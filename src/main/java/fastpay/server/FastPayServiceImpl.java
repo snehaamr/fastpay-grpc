@@ -4,15 +4,22 @@ import fastpay.fraud.FraudGuard;
 import fastpay.ledger.AccountSnapshot;
 import fastpay.ledger.InMemoryLedger;
 import fastpay.ledger.InvalidTransactionException;
+import fastpay.ledger.JournalEntry;
 import fastpay.ledger.PostedTransaction;
 import fastpay.ledger.SubmitResult;
 import fastpay.proto.AccountQuery;
 import fastpay.proto.AccountView;
 import fastpay.proto.FastPayGrpc;
+import fastpay.proto.JournalRecord;
+import fastpay.proto.ListJournalQuery;
+import fastpay.proto.ListJournalView;
 import fastpay.proto.ListTransactionsQuery;
 import fastpay.proto.ListTransactionsView;
+import fastpay.proto.OpenAccountRequest;
 import fastpay.proto.PaymentRecord;
 import fastpay.proto.PaymentStatus;
+import fastpay.proto.RefundRequest;
+import fastpay.proto.TransactionQuery;
 import fastpay.proto.TransactionRequest;
 import fastpay.proto.TransactionResponse;
 import fastpay.security.AuthContext;
@@ -65,7 +72,7 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
                 SubmitResult result = ledger.submit(req);
                 complete(respObs, toResponse(result, start));
             } catch (InvalidTransactionException e) {
-                respObs.onError(Status.INVALID_ARGUMENT.withDescription(e.getMessage()).asRuntimeException());
+                respObs.onError(invalidStatus(e).asRuntimeException());
             } catch (RuntimeException e) {
                 log.error("processTransaction failed", e);
                 respObs.onError(Status.INTERNAL.withDescription("ledger error").asRuntimeException());
@@ -125,7 +132,7 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
     }
 
     @Override
-    public void transactionStatus(TransactionRequest req, StreamObserver<TransactionResponse> respObs) {
+    public void transactionStatus(TransactionQuery req, StreamObserver<TransactionResponse> respObs) {
         Context context = Context.current();
         workerPool.execute(context.wrap(() -> {
             try {
@@ -211,20 +218,40 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
 
     @Override
     public void getAccount(AccountQuery req, StreamObserver<AccountView> respObs) {
-        try {
-            AccountSnapshot snapshot = ledger.getAccount(req.getAccountId());
-            respObs.onNext(AccountView.newBuilder()
-                    .setAccountId(snapshot.accountId())
-                    .setBalanceCents(snapshot.balanceCents())
-                    .setCurrency(snapshot.currency())
-                    .build());
-            respObs.onCompleted();
-        } catch (InvalidTransactionException e) {
-            Status status = e.getMessage().contains("required")
-                    ? Status.INVALID_ARGUMENT
-                    : Status.NOT_FOUND;
-            respObs.onError(status.withDescription(e.getMessage()).asRuntimeException());
-        }
+        Context context = Context.current();
+        workerPool.execute(context.wrap(() -> {
+            try {
+                AccountSnapshot snapshot = ledger.getAccount(req.getAccountId());
+                respObs.onNext(toAccountView(snapshot));
+                respObs.onCompleted();
+            } catch (InvalidTransactionException e) {
+                respObs.onError(invalidStatus(e).asRuntimeException());
+            } catch (RuntimeException e) {
+                log.error("getAccount failed", e);
+                respObs.onError(Status.INTERNAL.withDescription("account error").asRuntimeException());
+            }
+        }));
+    }
+
+    @Override
+    public void getPayment(TransactionQuery req, StreamObserver<PaymentRecord> respObs) {
+        Context context = Context.current();
+        workerPool.execute(context.wrap(() -> {
+            try {
+                var posted = ledger.find(req.getTransactionId());
+                if (posted.isEmpty()) {
+                    respObs.onError(Status.NOT_FOUND
+                            .withDescription("unknown transaction_id: " + req.getTransactionId())
+                            .asRuntimeException());
+                    return;
+                }
+                respObs.onNext(toPaymentRecord(posted.get()));
+                respObs.onCompleted();
+            } catch (RuntimeException e) {
+                log.error("getPayment failed", e);
+                respObs.onError(Status.INTERNAL.withDescription("payment error").asRuntimeException());
+            }
+        }));
     }
 
     @Override
@@ -236,21 +263,87 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
                     .asRuntimeException());
             return;
         }
-        ListTransactionsView.Builder view = ListTransactionsView.newBuilder();
-        for (PostedTransaction payment : ledger.listPayments(req.getAccountId(), req.getLimit())) {
-            view.addPayments(PaymentRecord.newBuilder()
-                    .setTransactionId(payment.transactionId())
-                    .setAccountFrom(payment.accountFrom())
-                    .setAccountTo(payment.accountTo())
-                    .setAmountCents(payment.amountCents())
-                    .setCurrency(payment.currency())
-                    .setSuccess(payment.success())
-                    .setStatus(payment.status())
-                    .setMessage(payment.message())
-                    .build());
+        Context context = Context.current();
+        workerPool.execute(context.wrap(() -> {
+            try {
+                ListTransactionsView.Builder view = ListTransactionsView.newBuilder();
+                for (PostedTransaction payment : ledger.listPayments(req.getAccountId(), req.getLimit())) {
+                    view.addPayments(toPaymentRecord(payment));
+                }
+                respObs.onNext(view.build());
+                respObs.onCompleted();
+            } catch (RuntimeException e) {
+                log.error("listTransactions failed", e);
+                respObs.onError(Status.INTERNAL.withDescription("list error").asRuntimeException());
+            }
+        }));
+    }
+
+    @Override
+    public void openAccount(OpenAccountRequest req, StreamObserver<AccountView> respObs) {
+        Context context = Context.current();
+        workerPool.execute(context.wrap(() -> {
+            try {
+                long opening = req.getOpeningCents() == 0
+                        ? InMemoryLedger.DEFAULT_OPENING_CENTS
+                        : req.getOpeningCents();
+                ledger.openAccount(req.getAccountId(), opening, req.getCurrency());
+                respObs.onNext(toAccountView(ledger.getAccount(req.getAccountId())));
+                respObs.onCompleted();
+            } catch (InvalidTransactionException e) {
+                respObs.onError(invalidStatus(e).asRuntimeException());
+            } catch (RuntimeException e) {
+                log.error("openAccount failed", e);
+                respObs.onError(Status.INTERNAL.withDescription("account error").asRuntimeException());
+            }
+        }));
+    }
+
+    @Override
+    public void refundTransaction(RefundRequest req, StreamObserver<TransactionResponse> respObs) {
+        long start = nowNanos();
+        Context context = Context.current();
+        workerPool.execute(context.wrap(() -> {
+            try {
+                SubmitResult result = ledger.refund(req.getTransactionId(), req.getRefundId());
+                complete(respObs, toResponse(result, start));
+            } catch (InvalidTransactionException e) {
+                respObs.onError(invalidStatus(e).asRuntimeException());
+            } catch (RuntimeException e) {
+                log.error("refundTransaction failed", e);
+                respObs.onError(Status.INTERNAL.withDescription("refund error").asRuntimeException());
+            }
+        }));
+    }
+
+    @Override
+    public void listJournal(ListJournalQuery req, StreamObserver<ListJournalView> respObs) {
+        if (AuthContext.currentRole() != Role.ADMIN) {
+            respObs.onError(Status.PERMISSION_DENIED
+                    .withDescription("admin token required to list journal entries")
+                    .asRuntimeException());
+            return;
         }
-        respObs.onNext(view.build());
-        respObs.onCompleted();
+        Context context = Context.current();
+        workerPool.execute(context.wrap(() -> {
+            try {
+                int limit = req.getLimit() <= 0 ? 50 : req.getLimit();
+                ListJournalView.Builder view = ListJournalView.newBuilder();
+                for (JournalEntry entry : ledger.journalEntries(req.getAccountId(), limit)) {
+                    view.addEntries(JournalRecord.newBuilder()
+                            .setTransactionId(entry.transactionId())
+                            .setAccountId(entry.accountId())
+                            .setDeltaCents(entry.deltaCents())
+                            .setCurrency(entry.currency())
+                            .build());
+                }
+                respObs.onNext(view.build());
+                respObs.onCompleted();
+            } catch (RuntimeException e) {
+                log.error("listJournal failed", e);
+                respObs.onError(Status.INTERNAL.withDescription("journal error").asRuntimeException());
+            }
+        }));
     }
 
     private TransactionResponse toResponse(SubmitResult result, long startNanos) {
@@ -265,6 +358,42 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
                 .setServerTimestampNanos(nowNanos())
                 .setProcessingNanos(nowNanos() - startNanos)
                 .build();
+    }
+
+    private static AccountView toAccountView(AccountSnapshot snapshot) {
+        return AccountView.newBuilder()
+                .setAccountId(snapshot.accountId())
+                .setBalanceCents(snapshot.balanceCents())
+                .setCurrency(snapshot.currency())
+                .build();
+    }
+
+    static PaymentRecord toPaymentRecord(PostedTransaction payment) {
+        PaymentRecord.Builder record = PaymentRecord.newBuilder()
+                .setTransactionId(payment.transactionId())
+                .setAccountFrom(payment.accountFrom())
+                .setAccountTo(payment.accountTo())
+                .setAmountCents(payment.amountCents())
+                .setCurrency(payment.currency())
+                .setSuccess(payment.success())
+                .setStatus(payment.status())
+                .setMessage(payment.message())
+                .setCreatedAtMillis(payment.createdAtMillis());
+        if (payment.refundOf() != null && !payment.refundOf().isBlank()) {
+            record.setRefundOf(payment.refundOf());
+        }
+        return record.build();
+    }
+
+    static Status invalidStatus(InvalidTransactionException e) {
+        String message = e.getMessage() == null ? "invalid request" : e.getMessage();
+        if (message.startsWith("unknown ")) {
+            return Status.NOT_FOUND.withDescription(message);
+        }
+        if (message.contains("already exists")) {
+            return Status.ALREADY_EXISTS.withDescription(message);
+        }
+        return Status.INVALID_ARGUMENT.withDescription(message);
     }
 
     static PaymentStatus[] statusSteps(PaymentStatus terminal) {

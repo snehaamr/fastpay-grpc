@@ -9,10 +9,14 @@ option java_outer_classname = "FastPayProto";
 service FastPay {
   rpc ProcessTransaction (TransactionRequest) returns (TransactionResponse);
   rpc UploadTransactions (stream TransactionRequest) returns (TransactionResponse);
-  rpc TransactionStatus (TransactionRequest) returns (stream TransactionResponse);
+  rpc TransactionStatus (TransactionQuery) returns (stream TransactionResponse);
   rpc LiveTransactions (stream TransactionRequest) returns (stream TransactionResponse);
   rpc GetAccount (AccountQuery) returns (AccountView);
+  rpc GetPayment (TransactionQuery) returns (PaymentRecord);
   rpc ListTransactions (ListTransactionsQuery) returns (ListTransactionsView);
+  rpc OpenAccount (OpenAccountRequest) returns (AccountView);
+  rpc RefundTransaction (RefundRequest) returns (TransactionResponse);
+  rpc ListJournal (ListJournalQuery) returns (ListJournalView);
 }
 
 enum PaymentStatus {
@@ -44,6 +48,10 @@ message TransactionResponse {
   int64 amount_cents = 8;
 }
 
+message TransactionQuery {
+  string transaction_id = 1;
+}
+
 message AccountQuery {
   string account_id = 1;
 }
@@ -52,6 +60,20 @@ message AccountView {
   string account_id = 1;
   int64 balance_cents = 2;
   string currency = 3;
+}
+
+message OpenAccountRequest {
+  string account_id = 1;
+  // Proto3 default 0 means the server opening balance ($10,000.00).
+  int64 opening_cents = 2;
+  string currency = 3;
+}
+
+message RefundRequest {
+  // Original settled payment to reverse.
+  string transaction_id = 1;
+  // Optional idempotency key. Defaults to refund:{transaction_id}.
+  string refund_id = 2;
 }
 
 message ListTransactionsQuery {
@@ -72,4 +94,22 @@ message PaymentRecord {
   bool success = 6;
   string message = 7;
   PaymentStatus status = 8;
+  int64 created_at_millis = 9;
+  string refund_of = 10;
+}
+
+message ListJournalQuery {
+  string account_id = 1;
+  int32 limit = 2;
+}
+
+message ListJournalView {
+  repeated JournalRecord entries = 1;
+}
+
+message JournalRecord {
+  string transaction_id = 1;
+  string account_id = 2;
+  int64 delta_cents = 3;
+  string currency = 4;
 }

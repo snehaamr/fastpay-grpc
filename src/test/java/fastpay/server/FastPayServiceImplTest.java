@@ -5,9 +5,14 @@ import fastpay.ledger.InMemoryLedger;
 import fastpay.proto.AccountQuery;
 import fastpay.proto.AccountView;
 import fastpay.proto.FastPayGrpc;
+import fastpay.proto.ListJournalQuery;
+import fastpay.proto.ListJournalView;
 import fastpay.proto.ListTransactionsQuery;
 import fastpay.proto.ListTransactionsView;
+import fastpay.proto.OpenAccountRequest;
 import fastpay.proto.PaymentStatus;
+import fastpay.proto.RefundRequest;
+import fastpay.proto.TransactionQuery;
 import fastpay.proto.TransactionRequest;
 import fastpay.proto.TransactionResponse;
 import fastpay.security.Auth;
@@ -191,7 +196,7 @@ class FastPayServiceImplTest {
     void transactionStatusStreamsPostedPayment() {
         stub.processTransaction(request("txn-status", "ACC-111", "ACC-222", 100));
         Iterator<TransactionResponse> statuses = stub.transactionStatus(
-                request("txn-status", "ACC-111", "ACC-222", 100));
+                TransactionQuery.newBuilder().setTransactionId("txn-status").build());
         List<PaymentStatus> steps = new ArrayList<>();
         statuses.forEachRemaining(resp -> steps.add(resp.getStatus()));
         assertEquals(List.of(PaymentStatus.PENDING, PaymentStatus.AUTHORIZED, PaymentStatus.SETTLED), steps);
@@ -201,9 +206,129 @@ class FastPayServiceImplTest {
     void transactionStatusUnknownId() {
         StatusRuntimeException ex = assertThrows(
                 StatusRuntimeException.class,
-                () -> stub.transactionStatus(request("missing", "ACC-111", "ACC-222", 100)).hasNext()
+                () -> stub.transactionStatus(
+                        TransactionQuery.newBuilder().setTransactionId("missing").build()).hasNext()
         );
         assertEquals(Status.Code.NOT_FOUND, ex.getStatus().getCode());
+    }
+
+    @Test
+    void getPaymentReturnsPostedRecord() {
+        stub.processTransaction(request("txn-get", "ACC-111", "ACC-222", 750));
+        var payment = stub.getPayment(TransactionQuery.newBuilder().setTransactionId("txn-get").build());
+        assertEquals("txn-get", payment.getTransactionId());
+        assertEquals(750, payment.getAmountCents());
+        assertEquals(PaymentStatus.SETTLED, payment.getStatus());
+        assertTrue(payment.getCreatedAtMillis() > 0);
+        assertTrue(payment.getRefundOf().isBlank());
+    }
+
+    @Test
+    void openAccountCreatesBalance() {
+        AccountView view = stub.openAccount(OpenAccountRequest.newBuilder()
+                .setAccountId("ACC-NEW")
+                .setOpeningCents(42_00)
+                .setCurrency("USD")
+                .build());
+        assertEquals("ACC-NEW", view.getAccountId());
+        assertEquals(4200, view.getBalanceCents());
+        assertEquals("USD", view.getCurrency());
+    }
+
+    @Test
+    void openAccountDuplicateIsAlreadyExists() {
+        stub.openAccount(OpenAccountRequest.newBuilder()
+                .setAccountId("ACC-DUP")
+                .setOpeningCents(100)
+                .build());
+        StatusRuntimeException ex = assertThrows(
+                StatusRuntimeException.class,
+                () -> stub.openAccount(OpenAccountRequest.newBuilder()
+                        .setAccountId("ACC-DUP")
+                        .setOpeningCents(100)
+                        .build())
+        );
+        assertEquals(Status.Code.ALREADY_EXISTS, ex.getStatus().getCode());
+    }
+
+    @Test
+    void refundReversesSettledPayment() {
+        stub.processTransaction(request("txn-refund", "ACC-111", "ACC-222", 1000));
+        TransactionResponse refund = stub.refundTransaction(RefundRequest.newBuilder()
+                .setTransactionId("txn-refund")
+                .build());
+        assertTrue(refund.getSuccess());
+        assertFalse(refund.getReplayed());
+        assertEquals(PaymentStatus.SETTLED, refund.getStatus());
+        assertEquals("refund:txn-refund", refund.getTransactionId());
+        assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS, ledger.balanceCents("ACC-111"));
+        assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS, ledger.balanceCents("ACC-222"));
+
+        TransactionResponse replay = stub.refundTransaction(RefundRequest.newBuilder()
+                .setTransactionId("txn-refund")
+                .build());
+        assertTrue(replay.getReplayed());
+        assertEquals("refund:txn-refund", replay.getTransactionId());
+
+        var payment = stub.getPayment(TransactionQuery.newBuilder()
+                .setTransactionId("refund:txn-refund")
+                .build());
+        assertEquals("txn-refund", payment.getRefundOf());
+    }
+
+    @Test
+    void refundUnknownPaymentIsNotFound() {
+        StatusRuntimeException ex = assertThrows(
+                StatusRuntimeException.class,
+                () -> stub.refundTransaction(RefundRequest.newBuilder()
+                        .setTransactionId("does-not-exist")
+                        .build())
+        );
+        assertEquals(Status.Code.NOT_FOUND, ex.getStatus().getCode());
+    }
+
+    @Test
+    void refundRejectedPaymentIsInvalid() {
+        stub.processTransaction(request("txn-nsf-refund", "ACC-POOR", "ACC-222", 500));
+        StatusRuntimeException ex = assertThrows(
+                StatusRuntimeException.class,
+                () -> stub.refundTransaction(RefundRequest.newBuilder()
+                        .setTransactionId("txn-nsf-refund")
+                        .build())
+        );
+        assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+    }
+
+    @Test
+    void currencyMismatchIsRejected() {
+        ledger.openAccount("ACC-EUR", 50_000, "EUR");
+        StatusRuntimeException ex = assertThrows(
+                StatusRuntimeException.class,
+                () -> stub.processTransaction(request("txn-fx", "ACC-111", "ACC-EUR", 100))
+        );
+        assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+        assertTrue(ex.getStatus().getDescription().contains("currency mismatch"));
+    }
+
+    @Test
+    void paymentsTokenCannotListJournal() {
+        StatusRuntimeException ex = assertThrows(
+                StatusRuntimeException.class,
+                () -> stub.listJournal(ListJournalQuery.getDefaultInstance())
+        );
+        assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
+    }
+
+    @Test
+    void adminTokenCanListJournal() {
+        FastPayGrpc.FastPayBlockingStub admin = stubFor(Auth.ADMIN_TOKEN);
+        stub.processTransaction(request("txn-journal", "ACC-111", "ACC-222", 100));
+        ListJournalView view = admin.listJournal(ListJournalQuery.newBuilder()
+                .setAccountId("ACC-111")
+                .setLimit(10)
+                .build());
+        assertTrue(view.getEntriesCount() >= 2);
+        assertTrue(view.getEntriesList().stream().anyMatch(entry -> "txn-journal".equals(entry.getTransactionId())));
     }
 
     @Test

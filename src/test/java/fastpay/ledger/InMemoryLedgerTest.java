@@ -177,6 +177,66 @@ class InMemoryLedgerTest {
         }
     }
 
+    @Test
+    void refundReversesBalancesAndIsIdempotent() {
+        ledger.submit(request("txn-refund", "ACC-111", "ACC-222", 2500));
+        SubmitResult first = ledger.refund("txn-refund", "");
+        SubmitResult second = ledger.refund("txn-refund", "");
+
+        assertTrue(first.transaction().success());
+        assertFalse(first.replayed());
+        assertTrue(second.replayed());
+        assertEquals(first.transaction(), second.transaction());
+        assertEquals("txn-refund", first.transaction().refundOf());
+        assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS, ledger.balanceCents("ACC-111"));
+        assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS, ledger.balanceCents("ACC-222"));
+        assertJournalBalances("ACC-111");
+        assertJournalBalances("ACC-222");
+    }
+
+    @Test
+    void refundRejectsFailedPayment() {
+        ledger.submit(request("txn-poor-refund", "ACC-POOR", "ACC-222", 500));
+        InvalidTransactionException ex = assertThrows(
+                InvalidTransactionException.class,
+                () -> ledger.refund("txn-poor-refund", "")
+        );
+        assertTrue(ex.getMessage().contains("only settled"));
+    }
+
+    @Test
+    void currencyMismatchIsRejected() {
+        ledger.openAccount("ACC-EUR", 50_000, "EUR");
+        InvalidTransactionException ex = assertThrows(
+                InvalidTransactionException.class,
+                () -> ledger.submit(request("txn-fx", "ACC-111", "ACC-EUR", 100))
+        );
+        assertTrue(ex.getMessage().contains("currency mismatch"));
+        assertTrue(ledger.find("txn-fx").isEmpty());
+    }
+
+    @Test
+    void openAccountPersistsAcrossReopen() throws Exception {
+        Path db = Files.createTempFile("fastpay-open", ".db");
+        try {
+            try (InMemoryLedger first = new InMemoryLedger(db)) {
+                first.openAccount("ACC-NEW", 12_34, "USD");
+                first.submit(request("txn-new", "ACC-NEW", "ACC-111", 34));
+            }
+            try (InMemoryLedger second = new InMemoryLedger(db)) {
+                assertEquals(1200, second.balanceCents("ACC-NEW"));
+                SubmitResult refund = second.refund("txn-new", "refund-custom");
+                assertTrue(refund.transaction().success());
+                assertEquals("refund-custom", refund.transaction().transactionId());
+                assertEquals(1234, second.balanceCents("ACC-NEW"));
+            }
+        } finally {
+            Files.deleteIfExists(db);
+            Files.deleteIfExists(Path.of(db.toString() + "-wal"));
+            Files.deleteIfExists(Path.of(db.toString() + "-shm"));
+        }
+    }
+
     private void assertJournalBalances(String accountId) {
         long journalSum = ledger.journalEntries(accountId).stream()
                 .mapToLong(JournalEntry::deltaCents)
