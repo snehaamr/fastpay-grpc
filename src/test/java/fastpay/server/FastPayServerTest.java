@@ -4,11 +4,19 @@ import fastpay.client.FastPayClient;
 import fastpay.security.Auth;
 import fastpay.security.RuntimeConfig;
 import fastpay.security.Tls;
+import io.grpc.ManagedChannel;
+import io.grpc.health.v1.HealthCheckRequest;
+import io.grpc.health.v1.HealthCheckResponse;
+import io.grpc.health.v1.HealthGrpc;
+import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
 import org.junit.jupiter.api.Test;
 
 import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class FastPayServerTest {
     @Test
@@ -20,6 +28,24 @@ class FastPayServerTest {
             client.runUnary();
         } finally {
             client.shutdown();
+            server.stop();
+        }
+    }
+
+    @Test
+    void healthCheckDoesNotRequireAuth() throws Exception {
+        FastPayServer server = new FastPayServer(0);
+        server.start();
+        ManagedChannel channel = NettyChannelBuilder.forAddress("127.0.0.1", server.getPort())
+                .usePlaintext()
+                .build();
+        try {
+            HealthCheckResponse response = HealthGrpc.newBlockingStub(channel)
+                    .check(HealthCheckRequest.getDefaultInstance());
+            assertEquals(HealthCheckResponse.ServingStatus.SERVING, response.getStatus());
+        } finally {
+            channel.shutdownNow();
+            channel.awaitTermination(5, TimeUnit.SECONDS);
             server.stop();
         }
     }

@@ -57,6 +57,7 @@ public final class InMemoryLedger implements AutoCloseable {
                 // in-memory databases may not support WAL
             }
             initSchema();
+            migrateSchema();
             seedAccountsIfEmpty();
             seedApiKeys(paymentsToken, adminToken);
             loadApiKeys();
@@ -96,7 +97,8 @@ public final class InMemoryLedger implements AutoCloseable {
                       success INTEGER NOT NULL,
                       message TEXT NOT NULL,
                       status TEXT NOT NULL,
-                      created_at INTEGER NOT NULL
+                      created_at INTEGER NOT NULL,
+                      refund_of TEXT
                     )
                     """);
             statement.execute("""
@@ -115,7 +117,32 @@ public final class InMemoryLedger implements AutoCloseable {
                       label TEXT NOT NULL
                     )
                     """);
+            statement.execute("CREATE INDEX IF NOT EXISTS payments_created_at ON payments(created_at)");
+            statement.execute("CREATE INDEX IF NOT EXISTS journal_account ON journal(account_id)");
         }
+    }
+
+    private void migrateSchema() throws SQLException {
+        if (!hasColumn("payments", "refund_of")) {
+            try (Statement statement = conn.createStatement()) {
+                statement.execute("ALTER TABLE payments ADD COLUMN refund_of TEXT");
+            }
+        }
+        try (Statement statement = conn.createStatement()) {
+            statement.execute("CREATE INDEX IF NOT EXISTS payments_refund_of ON payments(refund_of)");
+        }
+    }
+
+    private boolean hasColumn(String table, String column) throws SQLException {
+        try (Statement statement = conn.createStatement();
+             ResultSet rs = statement.executeQuery("PRAGMA table_info(" + table + ")")) {
+            while (rs.next()) {
+                if (column.equalsIgnoreCase(rs.getString("name"))) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private void seedAccountsIfEmpty() throws SQLException {
@@ -125,11 +152,11 @@ public final class InMemoryLedger implements AutoCloseable {
                 return;
             }
         }
-        openAccount("ACC-111", DEFAULT_OPENING_CENTS);
-        openAccount("ACC-222", DEFAULT_OPENING_CENTS);
-        openAccount("ACC-AAA", DEFAULT_OPENING_CENTS);
-        openAccount("ACC-BBB", DEFAULT_OPENING_CENTS);
-        openAccount("ACC-POOR", POOR_OPENING_CENTS);
+        openAccount("ACC-111", DEFAULT_OPENING_CENTS, DEFAULT_CURRENCY);
+        openAccount("ACC-222", DEFAULT_OPENING_CENTS, DEFAULT_CURRENCY);
+        openAccount("ACC-AAA", DEFAULT_OPENING_CENTS, DEFAULT_CURRENCY);
+        openAccount("ACC-BBB", DEFAULT_OPENING_CENTS, DEFAULT_CURRENCY);
+        openAccount("ACC-POOR", POOR_OPENING_CENTS, DEFAULT_CURRENCY);
     }
 
     private void seedApiKeys(String paymentsToken, String adminToken) throws SQLException {
@@ -167,18 +194,25 @@ public final class InMemoryLedger implements AutoCloseable {
     }
 
     public void openAccount(String accountId, long openingCents) {
+        openAccount(accountId, openingCents, DEFAULT_CURRENCY);
+    }
+
+    public void openAccount(String accountId, long openingCents, String currency) {
         if (accountId == null || accountId.isBlank()) {
-            throw new InvalidTransactionException("account id is required");
+            throw new InvalidTransactionException("account_id is required");
         }
         if (openingCents < 0) {
             throw new InvalidTransactionException("opening balance cannot be negative");
         }
+        String resolvedCurrency = (currency == null || currency.isBlank())
+                ? DEFAULT_CURRENCY
+                : currency.trim().toUpperCase(Locale.US);
         synchronized (lock) {
             try {
                 try (PreparedStatement ps = conn.prepareStatement(
                         "INSERT INTO accounts(id, currency, balance_cents) VALUES (?, ?, ?)")) {
                     ps.setString(1, accountId);
-                    ps.setString(2, DEFAULT_CURRENCY);
+                    ps.setString(2, resolvedCurrency);
                     ps.setLong(3, openingCents);
                     ps.executeUpdate();
                 }
@@ -187,7 +221,7 @@ public final class InMemoryLedger implements AutoCloseable {
                     ps.setString(1, "opening:" + accountId);
                     ps.setString(2, accountId);
                     ps.setLong(3, openingCents);
-                    ps.setString(4, DEFAULT_CURRENCY);
+                    ps.setString(4, resolvedCurrency);
                     ps.executeUpdate();
                 }
             } catch (SQLException e) {
@@ -225,8 +259,8 @@ public final class InMemoryLedger implements AutoCloseable {
         int cap = limit <= 0 ? 50 : Math.min(limit, 500);
         synchronized (lock) {
             String sql = (accountId == null || accountId.isBlank())
-                    ? "SELECT * FROM payments ORDER BY created_at ASC LIMIT ?"
-                    : "SELECT * FROM payments WHERE account_from = ? OR account_to = ? ORDER BY created_at ASC LIMIT ?";
+                    ? "SELECT * FROM payments ORDER BY created_at DESC LIMIT ?"
+                    : "SELECT * FROM payments WHERE account_from = ? OR account_to = ? ORDER BY created_at DESC LIMIT ?";
             try (PreparedStatement ps = conn.prepareStatement(sql)) {
                 if (accountId == null || accountId.isBlank()) {
                     ps.setInt(1, cap);
@@ -249,13 +283,27 @@ public final class InMemoryLedger implements AutoCloseable {
     }
 
     public List<JournalEntry> journalEntries(String accountId) {
+        return journalEntries(accountId, 0);
+    }
+
+    public List<JournalEntry> journalEntries(String accountId, int limit) {
+        boolean capped = limit > 0;
+        int cap = capped ? Math.min(limit, 1000) : Integer.MAX_VALUE;
         synchronized (lock) {
-            String sql = (accountId == null || accountId.isBlank())
-                    ? "SELECT transaction_id, account_id, delta_cents, currency FROM journal ORDER BY id"
-                    : "SELECT transaction_id, account_id, delta_cents, currency FROM journal WHERE account_id = ? ORDER BY id";
+            boolean allAccounts = accountId == null || accountId.isBlank();
+            String sql = allAccounts
+                    ? "SELECT transaction_id, account_id, delta_cents, currency FROM journal ORDER BY id DESC"
+                    : "SELECT transaction_id, account_id, delta_cents, currency FROM journal WHERE account_id = ? ORDER BY id DESC";
+            if (capped) {
+                sql += " LIMIT ?";
+            }
             try (PreparedStatement ps = conn.prepareStatement(sql)) {
-                if (accountId != null && !accountId.isBlank()) {
-                    ps.setString(1, accountId);
+                int idx = 1;
+                if (!allAccounts) {
+                    ps.setString(idx++, accountId);
+                }
+                if (capped) {
+                    ps.setInt(idx, cap);
                 }
                 try (ResultSet rs = ps.executeQuery()) {
                     List<JournalEntry> rows = new ArrayList<>();
@@ -339,12 +387,94 @@ public final class InMemoryLedger implements AutoCloseable {
         }
     }
 
+    public SubmitResult refund(String originalTransactionId, String refundId) {
+        if (originalTransactionId == null || originalTransactionId.isBlank()) {
+            throw new InvalidTransactionException("transaction_id is required");
+        }
+        String id = (refundId == null || refundId.isBlank())
+                ? "refund:" + originalTransactionId
+                : refundId;
+        synchronized (lock) {
+            try {
+                conn.setAutoCommit(false);
+                Optional<PostedTransaction> existingById = findUnlocked(id);
+                if (existingById.isPresent()) {
+                    conn.commit();
+                    return new SubmitResult(existingById.get(), true);
+                }
+                Optional<PostedTransaction> existingRefund = findRefundOf(originalTransactionId);
+                if (existingRefund.isPresent()) {
+                    conn.commit();
+                    return new SubmitResult(existingRefund.get(), true);
+                }
+                PostedTransaction original = findUnlocked(originalTransactionId)
+                        .orElseThrow(() -> new InvalidTransactionException(
+                                "unknown transaction_id: " + originalTransactionId));
+                if (original.isRefund()) {
+                    throw new InvalidTransactionException("cannot refund a refund");
+                }
+                if (!original.success() || original.status() != PaymentStatus.SETTLED) {
+                    throw new InvalidTransactionException("only settled payments can be refunded");
+                }
+                String payer = original.accountTo();
+                String payee = original.accountFrom();
+                long cents = original.amountCents();
+                AccountSnapshot source = requireAccount(payer);
+                AccountSnapshot dest = requireAccount(payee);
+                if (source.balanceCents() < cents) {
+                    throw new InvalidTransactionException(
+                            "Insufficient funds to refund: " + payer + " has "
+                                    + formatAmount(source.balanceCents()) + " " + original.currency()
+                                    + ", need " + formatAmount(cents));
+                }
+                updateBalance(payer, source.balanceCents() - cents);
+                updateBalance(payee, dest.balanceCents() + cents);
+                PostedTransaction posted = new PostedTransaction(
+                        id,
+                        payer,
+                        payee,
+                        cents,
+                        original.currency(),
+                        true,
+                        "Refunded " + formatAmount(cents) + " " + original.currency()
+                                + " of " + original.transactionId()
+                                + " from " + payer + " to " + payee,
+                        PaymentStatus.SETTLED,
+                        System.currentTimeMillis(),
+                        original.transactionId()
+                );
+                insertPayment(posted);
+                insertJournal(posted.transactionId(), payer, -cents, posted.currency());
+                insertJournal(posted.transactionId(), payee, cents, posted.currency());
+                conn.commit();
+                return new SubmitResult(posted, false);
+            } catch (RuntimeException e) {
+                rollbackQuietly();
+                throw e;
+            } catch (SQLException e) {
+                rollbackQuietly();
+                throw new IllegalStateException(e);
+            } finally {
+                try {
+                    conn.setAutoCommit(true);
+                } catch (SQLException ignored) {
+                    // ignore
+                }
+            }
+        }
+    }
+
     private PostedTransaction postNew(TransactionRequest request) throws SQLException {
         long cents = request.getAmountCents();
         String fromId = request.getAccountFrom();
         String toId = request.getAccountTo();
         AccountSnapshot from = requireAccount(fromId);
         AccountSnapshot to = requireAccount(toId);
+        String currency = request.getCurrency().trim().toUpperCase(Locale.US);
+        if (!from.currency().equalsIgnoreCase(currency) || !to.currency().equalsIgnoreCase(currency)) {
+            throw new InvalidTransactionException("currency mismatch: request " + currency
+                    + " vs accounts " + from.currency() + "/" + to.currency());
+        }
         if (from.balanceCents() < cents) {
             PostedTransaction rejected = new PostedTransaction(
                     request.getTransactionId(),
@@ -354,7 +484,7 @@ public final class InMemoryLedger implements AutoCloseable {
                     request.getCurrency(),
                     false,
                     "Insufficient funds: " + fromId + " has " + formatAmount(from.balanceCents())
-                            + " " + request.getCurrency() + ", need " + formatAmount(cents),
+                            + " " + currency + ", need " + formatAmount(cents),
                     PaymentStatus.FAILED
             );
             insertPayment(rejected);
@@ -367,9 +497,9 @@ public final class InMemoryLedger implements AutoCloseable {
                 fromId,
                 toId,
                 cents,
-                request.getCurrency(),
+                currency,
                 true,
-                "Processed " + formatAmount(cents) + " " + request.getCurrency()
+                "Processed " + formatAmount(cents) + " " + currency
                         + " from " + fromId + " to " + toId,
                 PaymentStatus.SETTLED
         );
@@ -383,6 +513,21 @@ public final class InMemoryLedger implements AutoCloseable {
         try (PreparedStatement ps = conn.prepareStatement(
                 "SELECT * FROM payments WHERE transaction_id = ?")) {
             ps.setString(1, transactionId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    return Optional.empty();
+                }
+                return Optional.of(mapPayment(rs));
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private Optional<PostedTransaction> findRefundOf(String originalTransactionId) {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT * FROM payments WHERE refund_of = ? LIMIT 1")) {
+            ps.setString(1, originalTransactionId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) {
                     return Optional.empty();
@@ -421,8 +566,8 @@ public final class InMemoryLedger implements AutoCloseable {
     private void insertPayment(PostedTransaction posted) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement("""
                 INSERT INTO payments(transaction_id, account_from, account_to, amount_cents, currency,
-                  success, message, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  success, message, status, created_at, refund_of)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """)) {
             ps.setString(1, posted.transactionId());
             ps.setString(2, posted.accountFrom());
@@ -432,7 +577,8 @@ public final class InMemoryLedger implements AutoCloseable {
             ps.setInt(6, posted.success() ? 1 : 0);
             ps.setString(7, posted.message());
             ps.setString(8, posted.status().name());
-            ps.setLong(9, System.currentTimeMillis());
+            ps.setLong(9, posted.createdAtMillis());
+            ps.setString(10, posted.refundOf());
             ps.executeUpdate();
         }
     }
@@ -449,6 +595,10 @@ public final class InMemoryLedger implements AutoCloseable {
     }
 
     private static PostedTransaction mapPayment(ResultSet rs) throws SQLException {
+        String refundOf = rs.getString("refund_of");
+        if (refundOf != null && refundOf.isBlank()) {
+            refundOf = null;
+        }
         return new PostedTransaction(
                 rs.getString("transaction_id"),
                 rs.getString("account_from"),
@@ -457,7 +607,9 @@ public final class InMemoryLedger implements AutoCloseable {
                 rs.getString("currency"),
                 rs.getInt("success") != 0,
                 rs.getString("message"),
-                PaymentStatus.valueOf(rs.getString("status"))
+                PaymentStatus.valueOf(rs.getString("status")),
+                rs.getLong("created_at"),
+                refundOf
         );
     }
 

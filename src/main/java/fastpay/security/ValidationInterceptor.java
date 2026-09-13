@@ -3,6 +3,9 @@ package fastpay.security;
 import fastpay.ledger.InMemoryLedger;
 import fastpay.ledger.InvalidTransactionException;
 import fastpay.proto.AccountQuery;
+import fastpay.proto.OpenAccountRequest;
+import fastpay.proto.RefundRequest;
+import fastpay.proto.TransactionQuery;
 import fastpay.proto.TransactionRequest;
 import io.grpc.ForwardingServerCallListener;
 import io.grpc.Metadata;
@@ -29,6 +32,12 @@ public final class ValidationInterceptor implements ServerInterceptor {
                         InMemoryLedger.validate(request);
                     } else if (message instanceof AccountQuery query && query.getAccountId().isBlank()) {
                         throw new InvalidTransactionException("account_id is required");
+                    } else if (message instanceof TransactionQuery query && query.getTransactionId().isBlank()) {
+                        throw new InvalidTransactionException("transaction_id is required");
+                    } else if (message instanceof OpenAccountRequest request && request.getAccountId().isBlank()) {
+                        throw new InvalidTransactionException("account_id is required");
+                    } else if (message instanceof RefundRequest request && request.getTransactionId().isBlank()) {
+                        throw new InvalidTransactionException("transaction_id is required");
                     }
                     super.onMessage(message);
                 } catch (InvalidTransactionException e) {
