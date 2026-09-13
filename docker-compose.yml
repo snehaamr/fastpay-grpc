@@ -1,0 +1,22 @@
+services:
+  fastpay:
+    build: .
+    image: fastpay
+    container_name: fastpay-grpc
+    ports:
+      - "6565:6565"
+    volumes:
+      - fastpay-data:/data
+    environment:
+      FASTPAY_TLS: "false"
+      FASTPAY_PAY_TOKEN: pay-token
+      FASTPAY_ADMIN_TOKEN: admin-token
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/6565'"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  fastpay-data:

@@ -4,6 +4,14 @@ import fastpay.ledger.InMemoryLedger;
 import fastpay.proto.AccountQuery;
 import fastpay.proto.AccountView;
 import fastpay.proto.FastPayGrpc;
+import fastpay.proto.ListJournalQuery;
+import fastpay.proto.ListJournalView;
+import fastpay.proto.ListTransactionsQuery;
+import fastpay.proto.OpenAccountRequest;
+import fastpay.proto.PaymentRecord;
+import fastpay.proto.PaymentStatus;
+import fastpay.proto.RefundRequest;
+import fastpay.proto.TransactionQuery;
 import fastpay.proto.TransactionRequest;
 import fastpay.proto.TransactionResponse;
 import fastpay.security.Auth;
@@ -20,12 +28,16 @@ import io.grpc.stub.StreamObserver;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 public class FastPayClient {
     private final ManagedChannel channel;
     private final FastPayGrpc.FastPayBlockingStub blockingStub;
+    private final FastPayGrpc.FastPayBlockingStub adminStub;
     private final FastPayGrpc.FastPayStub asyncStub;
 
     public FastPayClient(String host, int port) throws IOException {
@@ -44,7 +56,12 @@ public class FastPayClient {
                 channel,
                 MetadataUtils.newAttachHeadersInterceptor(Auth.metadata(config.authToken()))
         );
+        Channel admin = ClientInterceptors.intercept(
+                channel,
+                MetadataUtils.newAttachHeadersInterceptor(Auth.metadata(config.adminToken()))
+        );
         this.blockingStub = FastPayGrpc.newBlockingStub(authed).withDeadlineAfter(5, TimeUnit.SECONDS);
+        this.adminStub = FastPayGrpc.newBlockingStub(admin).withDeadlineAfter(5, TimeUnit.SECONDS);
         this.asyncStub = FastPayGrpc.newStub(authed).withDeadlineAfter(15, TimeUnit.SECONDS);
     }
 
@@ -70,6 +87,85 @@ public class FastPayClient {
                 + " status=" + replay.getStatus() + " replayed=" + replay.getReplayed());
         printAccount("ACC-111");
         printAccount("ACC-222");
+
+        Iterator<TransactionResponse> statuses = blockingStub.transactionStatus(
+                TransactionQuery.newBuilder().setTransactionId("txn-123").build());
+        List<PaymentStatus> steps = new ArrayList<>();
+        statuses.forEachRemaining(status -> steps.add(status.getStatus()));
+        System.out.println("Status stream: " + steps);
+
+        PaymentRecord payment = blockingStub.getPayment(
+                TransactionQuery.newBuilder().setTransactionId("txn-123").build());
+        System.out.println("GetPayment: " + payment.getTransactionId()
+                + " status=" + payment.getStatus()
+                + " created_at_millis=" + payment.getCreatedAtMillis());
+    }
+
+    public void runOpenRefundAndJournal() {
+        String accountId = "ACC-NEW-" + System.currentTimeMillis();
+        AccountView opened = blockingStub.openAccount(OpenAccountRequest.newBuilder()
+                .setAccountId(accountId)
+                .setOpeningCents(50_000)
+                .setCurrency("USD")
+                .build());
+        System.out.println("Opened " + opened.getAccountId() + " balance="
+                + InMemoryLedger.formatAmount(opened.getBalanceCents()) + " " + opened.getCurrency());
+
+        TransactionResponse refund = blockingStub.refundTransaction(RefundRequest.newBuilder()
+                .setTransactionId("txn-123")
+                .build());
+        System.out.println("Refund: " + refund.getMessage()
+                + " status=" + refund.getStatus() + " replayed=" + refund.getReplayed());
+        printAccount("ACC-111");
+        printAccount("ACC-222");
+
+        ListTransactionsQuery listQuery = ListTransactionsQuery.newBuilder()
+                .setAccountId("ACC-111")
+                .setLimit(5)
+                .build();
+        blockingStub.listTransactions(listQuery).getPaymentsList().forEach(payment ->
+                System.out.println("Payment " + payment.getTransactionId()
+                        + " " + payment.getStatus()
+                        + " refund_of=" + payment.getRefundOf()));
+
+        ListJournalView journal = adminStub.listJournal(ListJournalQuery.newBuilder()
+                .setAccountId("ACC-111")
+                .setLimit(6)
+                .build());
+        journal.getEntriesList().forEach(entry ->
+                System.out.println("Journal " + entry.getTransactionId()
+                        + " " + entry.getAccountId()
+                        + " delta=" + entry.getDeltaCents()));
+    }
+
+    public void runBulk() throws InterruptedException {
+        CountDownLatch latch = new CountDownLatch(1);
+        List<TransactionResponse> responses = new ArrayList<>();
+        StreamObserver<TransactionRequest> reqObs = asyncStub.uploadTransactions(new StreamObserver<>() {
+            @Override
+            public void onNext(TransactionResponse value) {
+                responses.add(value);
+            }
+
+            @Override
+            public void onError(Throwable t) {
+                t.printStackTrace();
+                latch.countDown();
+            }
+
+            @Override
+            public void onCompleted() {
+                latch.countDown();
+            }
+        });
+        long suffix = System.currentTimeMillis();
+        reqObs.onNext(request("bulk-" + suffix + "-a", "ACC-111", "ACC-222", 150));
+        reqObs.onNext(request("bulk-" + suffix + "-b", "ACC-111", "ACC-222", 250));
+        reqObs.onCompleted();
+        latch.await(5, TimeUnit.SECONDS);
+        if (!responses.isEmpty()) {
+            System.out.println("Bulk upload: " + responses.get(0).getMessage());
+        }
     }
 
     private void printAccount(String accountId) {
@@ -99,15 +195,7 @@ public class FastPayClient {
         });
 
         for (int i = 0; i < 5; i++) {
-            TransactionRequest req = TransactionRequest.newBuilder()
-                    .setTransactionId("txn-" + i)
-                    .setAccountFrom("ACC-AAA")
-                    .setAccountTo("ACC-BBB")
-                    .setAmountCents(10_000 + (i * 100L))
-                    .setCurrency("USD")
-                    .setClientTimestampNanos(System.nanoTime())
-                    .build();
-            reqObs.onNext(req);
+            reqObs.onNext(request("txn-" + i, "ACC-AAA", "ACC-BBB", 10_000 + (i * 100L)));
         }
         reqObs.onCompleted();
         latch.await(5, TimeUnit.SECONDS);
@@ -130,6 +218,8 @@ public class FastPayClient {
         FastPayClient client = new FastPayClient(host, targetPort, config);
         try {
             client.runUnary();
+            client.runOpenRefundAndJournal();
+            client.runBulk();
             client.runBidi();
         } finally {
             client.shutdown();
@@ -146,6 +236,17 @@ public class FastPayClient {
         } catch (IOException e) {
             return false;
         }
+    }
+
+    private static TransactionRequest request(String id, String from, String to, long amountCents) {
+        return TransactionRequest.newBuilder()
+                .setTransactionId(id)
+                .setAccountFrom(from)
+                .setAccountTo(to)
+                .setAmountCents(amountCents)
+                .setCurrency("USD")
+                .setClientTimestampNanos(System.nanoTime())
+                .build();
     }
 
     public static void main(String[] args) throws Exception {
