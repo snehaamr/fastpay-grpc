@@ -72,7 +72,7 @@ with `grpc-retry-pushback-ms`. Override with `FASTPAY_RATE_LIMIT_QPS` /
 TLS – private keys are **not** committed. `FASTPAY_TLS=true` generates localhost
 certs via openssl if `certs/server.key` is missing (`scripts/gen-certs.sh`).
 
-CI – GitHub Actions runs `./gradlew test` on pushes and PRs to `main`.
+CI – GitHub Actions runs `./gradlew test` and `docker build` on pushes and PRs to `main`.
 
 Live-stream fraud – amount above $1,000.00 (`100000` cents) or more than 8
 live payments from the same account in 10 seconds is `FLAGGED` and not posted
