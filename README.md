@@ -88,7 +88,7 @@ TLS – private keys are **not** committed. `FASTPAY_TLS=true` generates localho
 certs via openssl if `certs/server.key` is missing (`scripts/gen-certs.sh`).
 
 CI – GitHub Actions runs `./gradlew test` (including Postgres when the
-service is available) on pushes and PRs to `main`.
+service is available) and `docker build` on pushes and PRs to `main`.
 
 Live-stream fraud – amount above $1,000.00 (`100000` cents) or more than 8
 live payments from the same account in 10 seconds is `FLAGGED` and not posted

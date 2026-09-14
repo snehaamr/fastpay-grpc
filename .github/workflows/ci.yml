@@ -33,3 +33,11 @@ jobs:
         env:
           FASTPAY_TEST_JDBC_URL: jdbc:postgresql://127.0.0.1:5432/fastpay?user=fastpay&password=fastpay&sslmode=disable
         run: chmod +x gradlew && ./gradlew test --no-daemon
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t fastpay:ci .
+
