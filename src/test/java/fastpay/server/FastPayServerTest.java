@@ -1,14 +1,21 @@
 package fastpay.server;
 
 import fastpay.client.FastPayClient;
+import fastpay.proto.FastPayGrpc;
+import fastpay.proto.TransactionRequest;
 import fastpay.security.Auth;
 import fastpay.security.RuntimeConfig;
 import fastpay.security.Tls;
+import io.grpc.Channel;
+import io.grpc.ClientInterceptors;
 import io.grpc.ManagedChannel;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.grpc.health.v1.HealthCheckRequest;
 import io.grpc.health.v1.HealthCheckResponse;
 import io.grpc.health.v1.HealthGrpc;
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder;
+import io.grpc.stub.MetadataUtils;
 import org.junit.jupiter.api.Test;
 
 import java.net.ServerSocket;
@@ -17,6 +24,7 @@ import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class FastPayServerTest {
     @Test
@@ -40,6 +48,51 @@ class FastPayServerTest {
                 .usePlaintext()
                 .build();
         try {
+            HealthCheckResponse response = HealthGrpc.newBlockingStub(channel)
+                    .check(HealthCheckRequest.getDefaultInstance());
+            assertEquals(HealthCheckResponse.ServingStatus.SERVING, response.getStatus());
+        } finally {
+            channel.shutdownNow();
+            channel.awaitTermination(5, TimeUnit.SECONDS);
+            server.stop();
+        }
+    }
+
+    @Test
+    void healthIsNotRateLimited() throws Exception {
+        Path db = Files.createTempFile("fastpay-rl", ".db");
+        Files.deleteIfExists(db);
+        RuntimeConfig config = RuntimeConfig.plaintext().withDb(db).withRateLimit(1, 1);
+        FastPayServer server = new FastPayServer(0, config);
+        server.start();
+        ManagedChannel channel = NettyChannelBuilder.forAddress("127.0.0.1", server.getPort())
+                .usePlaintext()
+                .build();
+        try {
+            Channel authed = ClientInterceptors.intercept(
+                    channel,
+                    MetadataUtils.newAttachHeadersInterceptor(Auth.metadata(Auth.PAYMENTS_TOKEN))
+            );
+            FastPayGrpc.FastPayBlockingStub stub = FastPayGrpc.newBlockingStub(authed)
+                    .withDeadlineAfter(5, TimeUnit.SECONDS);
+            stub.processTransaction(TransactionRequest.newBuilder()
+                    .setTransactionId("rl-health-1")
+                    .setAccountFrom("ACC-111")
+                    .setAccountTo("ACC-222")
+                    .setAmountCents(1)
+                    .setCurrency("USD")
+                    .build());
+            StatusRuntimeException ex = assertThrows(
+                    StatusRuntimeException.class,
+                    () -> stub.processTransaction(TransactionRequest.newBuilder()
+                            .setTransactionId("rl-health-2")
+                            .setAccountFrom("ACC-111")
+                            .setAccountTo("ACC-222")
+                            .setAmountCents(1)
+                            .setCurrency("USD")
+                            .build())
+            );
+            assertEquals(Status.Code.RESOURCE_EXHAUSTED, ex.getStatus().getCode());
             HealthCheckResponse response = HealthGrpc.newBlockingStub(channel)
                     .check(HealthCheckRequest.getDefaultInstance());
             assertEquals(HealthCheckResponse.ServingStatus.SERVING, response.getStatus());
@@ -76,7 +129,9 @@ class FastPayServerTest {
                 ca,
                 db,
                 Auth.PAYMENTS_TOKEN,
-                Auth.ADMIN_TOKEN
+                Auth.ADMIN_TOKEN,
+                RuntimeConfig.DEFAULT_RATE_LIMIT_QPS,
+                RuntimeConfig.DEFAULT_RATE_LIMIT_BURST
         );
         FastPayServer server = new FastPayServer(0, tls);
         server.start();

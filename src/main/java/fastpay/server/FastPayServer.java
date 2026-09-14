@@ -3,6 +3,7 @@ package fastpay.server;
 import fastpay.fraud.FraudGuard;
 import fastpay.ledger.InMemoryLedger;
 import fastpay.security.AuthInterceptor;
+import fastpay.security.RateLimitInterceptor;
 import fastpay.security.RuntimeConfig;
 import fastpay.security.Tls;
 import fastpay.security.ValidationInterceptor;
@@ -63,6 +64,7 @@ public class FastPayServer {
                 .addService(health.getHealthService())
                 .addService(newReflectionService())
                 .intercept(new ValidationInterceptor())
+                .intercept(new RateLimitInterceptor(config.rateLimitQps(), config.rateLimitBurst()))
                 .intercept(new AuthInterceptor(ledger.tokenStore()))
                 .maxInboundMessageSize(16 * 1024 * 1024)
                 .keepAliveTime(30, TimeUnit.SECONDS)
@@ -128,8 +130,16 @@ public class FastPayServer {
         FastPayServer server = new FastPayServer(DEFAULT_PORT, config);
         server.start();
         System.out.println("tls=" + config.tls() + " db=" + config.db()
+                + " rate_limit=" + formatRateLimit(config)
                 + " roles=pay-token/admin-token (override FASTPAY_PAY_TOKEN / FASTPAY_ADMIN_TOKEN)");
         Runtime.getRuntime().addShutdownHook(new Thread(server::stop));
         server.awaitTermination();
+    }
+
+    private static String formatRateLimit(RuntimeConfig config) {
+        if (config.rateLimitQps() <= 0) {
+            return "off";
+        }
+        return config.rateLimitQps() + "/s burst=" + config.rateLimitBurst();
     }
 }

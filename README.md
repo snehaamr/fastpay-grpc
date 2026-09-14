@@ -52,6 +52,12 @@ Health and reflection – `grpc.health.v1.Health` and server reflection do **not
 require a bearer token, so `grpc_health_probe` / `grpcurl` work without `-H`.
 The health status is set to `NOT_SERVING` before a graceful shutdown.
 
+Rate limit – token-bucket per hashed API key (default 20 requests/sec, burst 40).
+Unary and server-streaming RPCs count as one request; bulk/live streams count
+each message. Health and reflection are unlimited. Returns `RESOURCE_EXHAUSTED`
+with `grpc-retry-pushback-ms`. Override with `FASTPAY_RATE_LIMIT_QPS` /
+`FASTPAY_RATE_LIMIT_BURST` (`0` disables the limiter).
+
 TLS – private keys are **not** committed. `FASTPAY_TLS=true` generates localhost
 certs via openssl if `certs/server.key` is missing (`scripts/gen-certs.sh`).
 
@@ -124,9 +130,11 @@ TLS in the container:
 docker run -d --name fastpay-grpc -p 6565:6565 -e FASTPAY_TLS=true fastpay
 ```
 
-Default payments token is `pay-token` (admin is `admin-token`). ghz must send it:
+Default payments token is `pay-token` (admin is `admin-token`). ghz must send it.
+Disable the rate limiter (or raise it) for load tests:
 
 ```bash
+FASTPAY_RATE_LIMIT_QPS=0 ./gradlew run
 ghz --insecure \
     --proto src/main/proto/fastpay.proto \
     --call fastpay.FastPay.ProcessTransaction \

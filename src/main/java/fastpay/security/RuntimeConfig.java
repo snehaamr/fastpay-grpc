@@ -9,8 +9,13 @@ public record RuntimeConfig(
         Path trustCert,
         Path db,
         String paymentsToken,
-        String adminToken
+        String adminToken,
+        double rateLimitQps,
+        int rateLimitBurst
 ) {
+    public static final double DEFAULT_RATE_LIMIT_QPS = 20.0;
+    public static final int DEFAULT_RATE_LIMIT_BURST = 40;
+
     public static RuntimeConfig fromEnv() {
         boolean tls = Boolean.parseBoolean(env("FASTPAY_TLS", "false"));
         Path cert = Path.of(env("FASTPAY_CERT", "certs/server.crt"));
@@ -19,7 +24,11 @@ public record RuntimeConfig(
         Path db = Path.of(env("FASTPAY_DB", "data/fastpay.db"));
         String pay = env("FASTPAY_PAY_TOKEN", Auth.PAYMENTS_TOKEN);
         String admin = env("FASTPAY_ADMIN_TOKEN", Auth.ADMIN_TOKEN);
-        return new RuntimeConfig(tls, cert, key, trust, db, pay, admin);
+        return new RuntimeConfig(
+                tls, cert, key, trust, db, pay, admin,
+                envDouble("FASTPAY_RATE_LIMIT_QPS", DEFAULT_RATE_LIMIT_QPS),
+                envInt("FASTPAY_RATE_LIMIT_BURST", DEFAULT_RATE_LIMIT_BURST)
+        );
     }
 
     public static RuntimeConfig plaintext() {
@@ -30,7 +39,9 @@ public record RuntimeConfig(
                 Path.of("certs/ca.crt"),
                 Path.of("data/fastpay.db"),
                 Auth.PAYMENTS_TOKEN,
-                Auth.ADMIN_TOKEN
+                Auth.ADMIN_TOKEN,
+                DEFAULT_RATE_LIMIT_QPS,
+                DEFAULT_RATE_LIMIT_BURST
         );
     }
 
@@ -39,11 +50,41 @@ public record RuntimeConfig(
     }
 
     public RuntimeConfig withDb(Path db) {
-        return new RuntimeConfig(tls, cert, key, trustCert, db, paymentsToken, adminToken);
+        return new RuntimeConfig(
+                tls, cert, key, trustCert, db, paymentsToken, adminToken, rateLimitQps, rateLimitBurst);
+    }
+
+    public RuntimeConfig withRateLimit(double qps, int burst) {
+        return new RuntimeConfig(
+                tls, cert, key, trustCert, db, paymentsToken, adminToken, qps, burst);
     }
 
     private static String env(String name, String fallback) {
         String value = System.getenv(name);
         return value == null || value.isBlank() ? fallback : value;
+    }
+
+    private static double envDouble(String name, double fallback) {
+        String value = System.getenv(name);
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        try {
+            return Double.parseDouble(value.trim());
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    private static int envInt(String name, int fallback) {
+        String value = System.getenv(name);
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        try {
+            return Integer.parseInt(value.trim());
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
     }
 }
