@@ -1,6 +1,6 @@
 package fastpay.security;
 
-import fastpay.ledger.InMemoryLedger;
+import fastpay.ledger.Ledger;
 import fastpay.proto.FastPayGrpc;
 import fastpay.proto.TransactionRequest;
 import fastpay.proto.TransactionResponse;
@@ -34,7 +34,7 @@ class RateLimitInterceptorTest {
     private io.grpc.Server server;
     private ManagedChannel channel;
     private ScheduledExecutorService workerPool;
-    private InMemoryLedger ledger;
+    private Ledger ledger;
 
     @AfterEach
     void tearDown() throws InterruptedException {
@@ -164,7 +164,7 @@ class RateLimitInterceptorTest {
             java.util.function.LongSupplier clock,
             String token
     ) throws Exception {
-        ledger = new InMemoryLedger();
+        ledger = new Ledger();
         workerPool = Executors.newScheduledThreadPool(2);
         String name = InProcessServerBuilder.generateName();
         server = InProcessServerBuilder.forName(name)

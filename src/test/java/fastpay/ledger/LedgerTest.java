@@ -1,8 +1,10 @@
 package fastpay.ledger;
 
+import fastpay.proto.PaymentStatus;
 import fastpay.proto.TransactionRequest;
 import fastpay.security.Auth;
 import fastpay.security.Role;
+import fastpay.webhook.PaymentEvents;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -23,12 +25,12 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-class InMemoryLedgerTest {
-    private InMemoryLedger ledger;
+class LedgerTest {
+    private Ledger ledger;
 
     @BeforeEach
     void setUp() {
-        ledger = new InMemoryLedger();
+        ledger = new Ledger();
     }
 
     @AfterEach
@@ -82,7 +84,7 @@ class InMemoryLedgerTest {
         assertEquals(first.transaction(), second.transaction());
         assertEquals(poorAfter, ledger.balanceCents("ACC-POOR"));
         assertEquals(destAfter, ledger.balanceCents("ACC-222"));
-        assertEquals(InMemoryLedger.POOR_OPENING_CENTS, poorAfter);
+        assertEquals(Ledger.POOR_OPENING_CENTS, poorAfter);
         assertEquals(journalBefore, ledger.journalEntries("ACC-POOR").size());
         assertEquals(1, ledger.listPayments("ACC-POOR", 10).size());
     }
@@ -134,8 +136,8 @@ class InMemoryLedgerTest {
         long replays = results.stream().filter(SubmitResult::replayed).count();
         assertEquals(1, originals);
         assertEquals(threads - 1, replays);
-        assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS - 2500, ledger.balanceCents("ACC-111"));
-        assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS + 2500, ledger.balanceCents("ACC-222"));
+        assertEquals(Ledger.DEFAULT_OPENING_CENTS - 2500, ledger.balanceCents("ACC-111"));
+        assertEquals(Ledger.DEFAULT_OPENING_CENTS + 2500, ledger.balanceCents("ACC-222"));
         assertJournalBalances("ACC-111");
         assertJournalBalances("ACC-222");
     }
@@ -152,8 +154,8 @@ class InMemoryLedgerTest {
             assertTrue(future.get(10, TimeUnit.SECONDS).transaction().success());
         }
         pool.shutdown();
-        assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS - 5000, ledger.balanceCents("ACC-111"));
-        assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS + 5000, ledger.balanceCents("ACC-222"));
+        assertEquals(Ledger.DEFAULT_OPENING_CENTS - 5000, ledger.balanceCents("ACC-111"));
+        assertEquals(Ledger.DEFAULT_OPENING_CENTS + 5000, ledger.balanceCents("ACC-222"));
         assertEquals(transfers, ledger.listPayments("ACC-111", 100).size());
         assertJournalBalances("ACC-111");
         assertJournalBalances("ACC-222");
@@ -163,12 +165,12 @@ class InMemoryLedgerTest {
     void persistsAcrossReopen() throws Exception {
         Path db = Files.createTempFile("fastpay", ".db");
         try {
-            try (InMemoryLedger first = new InMemoryLedger(db)) {
+            try (Ledger first = new Ledger(db)) {
                 first.submit(request("txn-durable", "ACC-111", "ACC-222", 2500));
-                assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS - 2500, first.balanceCents("ACC-111"));
+                assertEquals(Ledger.DEFAULT_OPENING_CENTS - 2500, first.balanceCents("ACC-111"));
             }
-            try (InMemoryLedger second = new InMemoryLedger(db)) {
-                assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS - 2500, second.balanceCents("ACC-111"));
+            try (Ledger second = new Ledger(db)) {
+                assertEquals(Ledger.DEFAULT_OPENING_CENTS - 2500, second.balanceCents("ACC-111"));
                 assertTrue(second.find("txn-durable").isPresent());
                 assertTrue(second.find("txn-durable").get().success());
             }
@@ -190,8 +192,8 @@ class InMemoryLedgerTest {
         assertTrue(second.replayed());
         assertEquals(first.transaction(), second.transaction());
         assertEquals("txn-refund", first.transaction().refundOf());
-        assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS, ledger.balanceCents("ACC-111"));
-        assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS, ledger.balanceCents("ACC-222"));
+        assertEquals(Ledger.DEFAULT_OPENING_CENTS, ledger.balanceCents("ACC-111"));
+        assertEquals(Ledger.DEFAULT_OPENING_CENTS, ledger.balanceCents("ACC-222"));
         assertJournalBalances("ACC-111");
         assertJournalBalances("ACC-222");
     }
@@ -221,11 +223,11 @@ class InMemoryLedgerTest {
     void openAccountPersistsAcrossReopen() throws Exception {
         Path db = Files.createTempFile("fastpay-open", ".db");
         try {
-            try (InMemoryLedger first = new InMemoryLedger(db)) {
+            try (Ledger first = new Ledger(db)) {
                 first.openAccount("ACC-NEW", 12_34, "USD");
                 first.submit(request("txn-new", "ACC-NEW", "ACC-111", 34));
             }
-            try (InMemoryLedger second = new InMemoryLedger(db)) {
+            try (Ledger second = new Ledger(db)) {
                 assertEquals(1200, second.balanceCents("ACC-NEW"));
                 SubmitResult refund = second.refund("txn-new", "refund-custom");
                 assertTrue(refund.transaction().success());
@@ -281,6 +283,24 @@ class InMemoryLedgerTest {
         assertEquals("ops", label);
         assertTrue(ledger.tokenStore().authenticate(Auth.bearer(created.token())).isEmpty());
         assertThrows(InvalidTransactionException.class, () -> ledger.revokeApiKey("", "admin"));
+    }
+
+    @Test
+    void outboxRecordsSettledFailedAndFlaggedOnce() {
+        ledger.submit(request("txn-hook-ok", "ACC-111", "ACC-222", 100));
+        ledger.submit(request("txn-hook-nsf", "ACC-POOR", "ACC-222", 500));
+        ledger.reject(request("txn-hook-flag", "ACC-111", "ACC-222", 100),
+                PaymentStatus.FLAGGED, "flagged: amount");
+        ledger.submit(request("txn-hook-ok", "ACC-111", "ACC-222", 100));
+
+        List<OutboxRecord> rows = ledger.listOutbox();
+        assertEquals(3, rows.size());
+        assertEquals(PaymentEvents.SETTLED, rows.get(0).eventType());
+        assertEquals("txn-hook-ok", rows.get(0).transactionId());
+        assertEquals(OutboxRecord.PENDING, rows.get(0).status());
+        assertTrue(rows.get(0).payload().contains("\"event\":\"payment.settled\""));
+        assertEquals(PaymentEvents.FAILED, rows.get(1).eventType());
+        assertEquals(PaymentEvents.FLAGGED, rows.get(2).eventType());
     }
 
     private void assertJournalBalances(String accountId) {

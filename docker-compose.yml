@@ -13,6 +13,7 @@ services:
       FASTPAY_ADMIN_TOKEN: admin-token
       FASTPAY_RATE_LIMIT_QPS: "20"
       FASTPAY_RATE_LIMIT_BURST: "40"
+      FASTPAY_WEBHOOK_URL: ""
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/6565'"]
       interval: 5s

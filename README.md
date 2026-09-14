@@ -21,7 +21,7 @@ Bidirectional streaming – Live transactions
 Continuous two-way stream between client and server
 Perfect for trading platforms, fraud monitoring, or high-frequency payments
 
-In-memory / SQLite ledger – debit the source account and credit the destination
+SQLite ledger (`Ledger`, formerly `InMemoryLedger`) – debit the source account and credit the destination
 Amounts are `int64 amount_cents` on the wire (no floating-point money)
 `PaymentStatus`: PENDING → AUTHORIZED → SETTLED, or FAILED / FLAGGED
 Request `currency` must match both accounts (seeded accounts are `USD`)
@@ -29,8 +29,9 @@ Request `currency` must match both accounts (seeded accounts are `USD`)
 Idempotency – `transaction_id` is unique; a retry sets `replayed=true` and
 does not post a second transfer (including insufficient-funds and fraud flags)
 
-Durable SQLite ledger – balances and payments survive process restart (`FASTPAY_DB`)
-Seeded demo accounts: ACC-111, ACC-222, ACC-AAA, ACC-BBB ($10,000.00) and ACC-POOR ($1.00)
+Durable ledger – balances and payments survive process restart (`FASTPAY_DB`
+or `FASTPAY_JDBC_URL`). Seeded demo accounts: ACC-111, ACC-222, ACC-AAA,
+ACC-BBB ($10,000.00) and ACC-POOR ($1.00)
 
 OpenAccount – create additional accounts (`opening_cents` of `0` means $10,000.00)
 
@@ -51,7 +52,7 @@ Pagination – `ListAccounts`, `ListTransactions`, and `ListJournal` take
 `page_token` and return `next_page_token` (opaque keyset cursor). Empty
 `next_page_token` means the last page. Invalid tokens are `INVALID_ARGUMENT`.
 
-Auth – hashed API keys in SQLite with two roles:
+Auth – hashed API keys in the ledger with two roles:
 - `pay-token` (PAYMENTS): transfers, refunds, status, GetAccount, OpenAccount, ListAccounts, list one account
 - `admin-token` (ADMIN): also list all payments and the journal, plus `CreateApiKey` / `RevokeApiKey`
 Override with `FASTPAY_PAY_TOKEN` / `FASTPAY_ADMIN_TOKEN`
@@ -69,10 +70,25 @@ each message. Health and reflection are unlimited. Returns `RESOURCE_EXHAUSTED`
 with `grpc-retry-pushback-ms`. Override with `FASTPAY_RATE_LIMIT_QPS` /
 `FASTPAY_RATE_LIMIT_BURST` (`0` disables the limiter).
 
+Webhooks – a transactional outbox row is written in the same commit when a
+payment is `SETTLED`, `FAILED`, or `FLAGGED` (`payment.settled` /
+`payment.failed` / `payment.flagged`). Replays do not enqueue a second event.
+Set `FASTPAY_WEBHOOK_URL` to POST JSON (optional `FASTPAY_WEBHOOK_SECRET`
+adds `X-FastPay-Signature: sha256=…`). Empty URL keeps rows pending.
+
+Postgres – SQLite remains the demo default. For HA:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d --build
+```
+
+`FASTPAY_JDBC_URL=jdbc:postgresql://host:5432/fastpay?user=fastpay&password=fastpay`
+
 TLS – private keys are **not** committed. `FASTPAY_TLS=true` generates localhost
 certs via openssl if `certs/server.key` is missing (`scripts/gen-certs.sh`).
 
-CI – GitHub Actions runs `./gradlew test` and `docker build` on pushes and PRs to `main`.
+CI – GitHub Actions runs `./gradlew test` (including Postgres when the
+service is available) and `docker build` on pushes and PRs to `main`.
 
 Live-stream fraud – amount above $1,000.00 (`100000` cents) or more than 8
 live payments from the same account in 10 seconds is `FLAGGED` and not posted
@@ -124,6 +140,12 @@ listed; `--rm` deletes the container as soon as it exits.
 docker compose up -d --build
 docker compose logs -f
 docker compose down
+```
+
+Postgres (HA) instead of the SQLite volume:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d --build
 ```
 
 Or without Compose:
@@ -201,4 +223,5 @@ Banking API integration (ACH, SEPA, SWIFT gateways)
 
 With FastPay, you have a fintech-grade blueprint for building low-latency, high-throughput APIs in Java using gRPC + Protobuf.
 
-This is still a demo: SQLite is not a HA payments database, the TLS certs are localhost self-signed, and API keys are hashed bearer tokens—not a bank-grade IAM or PCI program.
+This is still a demo: SQLite is the default store, Postgres is a single-node HA
+step (not a multi-region payments fabric), the TLS certs are localhost self-signed, and API keys are hashed bearer tokens—not a bank-grade IAM or PCI program.
