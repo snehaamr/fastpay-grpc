@@ -9,6 +9,7 @@ services:
       - fastpay-data:/data
     environment:
       FASTPAY_TLS: "false"
+      FASTPAY_MTLS: "false"
       FASTPAY_PAY_TOKEN: pay-token
       FASTPAY_ADMIN_TOKEN: admin-token
       FASTPAY_RATE_LIMIT_QPS: "20"

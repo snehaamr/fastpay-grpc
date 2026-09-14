@@ -72,6 +72,12 @@ with `grpc-retry-pushback-ms`. Override with `FASTPAY_RATE_LIMIT_QPS` /
 TLS – private keys are **not** committed. `FASTPAY_TLS=true` generates localhost
 certs via openssl if `certs/server.key` is missing (`scripts/gen-certs.sh`).
 
+mTLS – `FASTPAY_MTLS=true` (implies TLS) requires a client certificate signed by
+`FASTPAY_TRUST_CERT` **and** the existing bearer token. Missing client material
+is generated next to the server cert (`certs/client.crt` / `certs/client.key`).
+Health and reflection still skip the bearer token, but they must complete the
+TLS handshake. Override paths with `FASTPAY_CLIENT_CERT` / `FASTPAY_CLIENT_KEY`.
+
 CI – GitHub Actions runs `./gradlew test` on pushes and PRs to `main`.
 
 Live-stream fraud – amount above $1,000.00 (`100000` cents) or more than 8
@@ -103,6 +109,8 @@ To keep a server up for `ghz` / `grpcurl` or a second terminal:
 ./gradlew runClient           # uses that server and leaves it running
 FASTPAY_TLS=true ./gradlew run
 FASTPAY_TLS=true ./gradlew runClient
+FASTPAY_MTLS=true ./gradlew run
+FASTPAY_MTLS=true ./gradlew runClient
 ```
 
 `grpcurl` can use reflection (no `--proto` file) because the server exposes it:
@@ -112,6 +120,12 @@ grpcurl -plaintext 127.0.0.1:6565 list
 grpcurl -plaintext -H 'authorization: Bearer pay-token' \
   -d '{"transaction_id":"txn-curl","account_from":"ACC-111","account_to":"ACC-222","amount_cents":1000,"currency":"USD"}' \
   127.0.0.1:6565 fastpay.FastPay/ProcessTransaction
+
+# mTLS (after FASTPAY_MTLS=true ./gradlew run)
+grpcurl -cacert certs/ca.crt -cert certs/client.crt -key certs/client.key \
+  -H 'authorization: Bearer pay-token' \
+  -d '{"transaction_id":"txn-mtls","account_from":"ACC-111","account_to":"ACC-222","amount_cents":1000,"currency":"USD"}' \
+  localhost:6565 fastpay.FastPay/ProcessTransaction
 ```
 
 Docker (Docker Desktop must be running first: `docker info` should succeed)
@@ -139,6 +153,7 @@ TLS in the container:
 
 ```bash
 docker run -d --name fastpay-grpc -p 6565:6565 -e FASTPAY_TLS=true fastpay
+docker run -d --name fastpay-grpc -p 6565:6565 -e FASTPAY_MTLS=true fastpay
 ```
 
 Default payments token is `pay-token` (admin is `admin-token`). ghz must send it.

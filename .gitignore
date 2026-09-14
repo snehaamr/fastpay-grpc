@@ -13,4 +13,6 @@ bin/
 data/
 *.db
 certs/*.key
+certs/*.srl
+certs/*.csr
 
