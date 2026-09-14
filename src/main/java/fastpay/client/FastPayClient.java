@@ -1,6 +1,6 @@
 package fastpay.client;
 
-import fastpay.ledger.InMemoryLedger;
+import fastpay.ledger.Ledger;
 import fastpay.proto.AccountQuery;
 import fastpay.proto.AccountView;
 import fastpay.proto.ApiKeyRole;
@@ -117,7 +117,7 @@ public class FastPayClient {
                 .setCurrency("USD")
                 .build());
         System.out.println("Opened " + opened.getAccountId() + " balance="
-                + InMemoryLedger.formatAmount(opened.getBalanceCents()) + " " + opened.getCurrency());
+                + Ledger.formatAmount(opened.getBalanceCents()) + " " + opened.getCurrency());
 
         TransactionResponse refund = blockingStub.refundTransaction(RefundRequest.newBuilder()
                 .setTransactionId("txn-123")
@@ -145,7 +145,7 @@ public class FastPayClient {
                 .build());
         accounts.getAccountsList().forEach(account ->
                 System.out.println("Account " + account.getAccountId()
-                        + " balance=" + InMemoryLedger.formatAmount(account.getBalanceCents())));
+                        + " balance=" + Ledger.formatAmount(account.getBalanceCents())));
         if (!accounts.getNextPageToken().isBlank()) {
             ListAccountsView page2 = blockingStub.listAccounts(ListAccountsQuery.newBuilder()
                     .setLimit(3)
@@ -210,7 +210,7 @@ public class FastPayClient {
     private void printAccount(String accountId) {
         AccountView view = blockingStub.getAccount(AccountQuery.newBuilder().setAccountId(accountId).build());
         System.out.println(view.getAccountId() + " balance="
-                + InMemoryLedger.formatAmount(view.getBalanceCents()) + " " + view.getCurrency());
+                + Ledger.formatAmount(view.getBalanceCents()) + " " + view.getCurrency());
     }
 
     public void runBidi() throws InterruptedException {

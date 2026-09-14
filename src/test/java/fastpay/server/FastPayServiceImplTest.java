@@ -1,7 +1,7 @@
 package fastpay.server;
 
 import fastpay.fraud.FraudGuard;
-import fastpay.ledger.InMemoryLedger;
+import fastpay.ledger.Ledger;
 import fastpay.proto.AccountQuery;
 import fastpay.proto.AccountView;
 import fastpay.proto.ApiKeyRole;
@@ -54,14 +54,14 @@ class FastPayServiceImplTest {
     private Server server;
     private ManagedChannel channel;
     private ScheduledExecutorService workerPool;
-    private InMemoryLedger ledger;
+    private Ledger ledger;
     private FastPayGrpc.FastPayBlockingStub stub;
     private FastPayGrpc.FastPayStub asyncStub;
     private String serverName;
 
     @BeforeEach
     void setUp() throws Exception {
-        ledger = new InMemoryLedger();
+        ledger = new Ledger();
         workerPool = Executors.newScheduledThreadPool(2);
         serverName = InProcessServerBuilder.generateName();
         server = InProcessServerBuilder.forName(serverName)
@@ -103,7 +103,7 @@ class FastPayServiceImplTest {
         assertEquals("txn-123", response.getTransactionId());
         assertTrue(response.getMessage().contains("250.75"));
         assertEquals(25075, response.getAmountCents());
-        assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS - 25075, ledger.balanceCents("ACC-111"));
+        assertEquals(Ledger.DEFAULT_OPENING_CENTS - 25075, ledger.balanceCents("ACC-111"));
     }
 
     @Test
@@ -117,7 +117,7 @@ class FastPayServiceImplTest {
         assertTrue(second.getSuccess());
         assertTrue(second.getReplayed());
         assertEquals(PaymentStatus.SETTLED, second.getStatus());
-        assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS - 1000, ledger.balanceCents("ACC-111"));
+        assertEquals(Ledger.DEFAULT_OPENING_CENTS - 1000, ledger.balanceCents("ACC-111"));
     }
 
     @Test
@@ -163,7 +163,7 @@ class FastPayServiceImplTest {
         assertFalse(response.getSuccess());
         assertEquals(PaymentStatus.FAILED, response.getStatus());
         assertTrue(response.getMessage().contains("Insufficient funds"));
-        assertEquals(InMemoryLedger.POOR_OPENING_CENTS, ledger.balanceCents("ACC-POOR"));
+        assertEquals(Ledger.POOR_OPENING_CENTS, ledger.balanceCents("ACC-POOR"));
     }
 
     @Test
@@ -194,7 +194,7 @@ class FastPayServiceImplTest {
         assertEquals(1, responses.size());
         assertTrue(responses.get(0).getSuccess());
         assertTrue(responses.get(0).getMessage().contains("Posted 2"));
-        assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS - 300, ledger.balanceCents("ACC-111"));
+        assertEquals(Ledger.DEFAULT_OPENING_CENTS - 300, ledger.balanceCents("ACC-111"));
     }
 
     @Test
@@ -266,8 +266,8 @@ class FastPayServiceImplTest {
         assertFalse(refund.getReplayed());
         assertEquals(PaymentStatus.SETTLED, refund.getStatus());
         assertEquals("refund:txn-refund", refund.getTransactionId());
-        assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS, ledger.balanceCents("ACC-111"));
-        assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS, ledger.balanceCents("ACC-222"));
+        assertEquals(Ledger.DEFAULT_OPENING_CENTS, ledger.balanceCents("ACC-111"));
+        assertEquals(Ledger.DEFAULT_OPENING_CENTS, ledger.balanceCents("ACC-222"));
 
         TransactionResponse replay = stub.refundTransaction(RefundRequest.newBuilder()
                 .setTransactionId("txn-refund")
@@ -341,7 +341,7 @@ class FastPayServiceImplTest {
         stub.processTransaction(request("txn-bal", "ACC-111", "ACC-222", 1000));
         AccountView view = stub.getAccount(AccountQuery.newBuilder().setAccountId("ACC-111").build());
         assertEquals("ACC-111", view.getAccountId());
-        assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS - 1000, view.getBalanceCents());
+        assertEquals(Ledger.DEFAULT_OPENING_CENTS - 1000, view.getBalanceCents());
     }
 
     @Test
@@ -481,7 +481,7 @@ class FastPayServiceImplTest {
                 StatusRuntimeException.class,
                 () -> stub.processTransaction(request("txn-memo-long", "ACC-111", "ACC-222", 100)
                         .toBuilder()
-                        .setMemo("x".repeat(InMemoryLedger.MAX_MEMO_LENGTH + 1))
+                        .setMemo("x".repeat(Ledger.MAX_MEMO_LENGTH + 1))
                         .build())
         );
         assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
@@ -576,7 +576,7 @@ class FastPayServiceImplTest {
         assertEquals(1, responses.size());
         assertFalse(responses.get(0).getSuccess());
         assertEquals(PaymentStatus.FLAGGED, responses.get(0).getStatus());
-        assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS, ledger.balanceCents("ACC-111"));
+        assertEquals(Ledger.DEFAULT_OPENING_CENTS, ledger.balanceCents("ACC-111"));
     }
 
     @Test
@@ -610,12 +610,12 @@ class FastPayServiceImplTest {
         assertTrue(responses.get(1).getSuccess());
         assertFalse(responses.get(2).getSuccess());
         assertEquals(PaymentStatus.FLAGGED, responses.get(2).getStatus());
-        assertEquals(InMemoryLedger.DEFAULT_OPENING_CENTS - 200, ledger.balanceCents("ACC-111"));
+        assertEquals(Ledger.DEFAULT_OPENING_CENTS - 200, ledger.balanceCents("ACC-111"));
     }
 
     private void restartWithFraud(FraudGuard guard) throws Exception {
         tearDown();
-        ledger = new InMemoryLedger();
+        ledger = new Ledger();
         workerPool = Executors.newScheduledThreadPool(2);
         serverName = InProcessServerBuilder.generateName();
         server = InProcessServerBuilder.forName(serverName)

@@ -21,7 +21,7 @@ Bidirectional streaming – Live transactions
 Continuous two-way stream between client and server
 Perfect for trading platforms, fraud monitoring, or high-frequency payments
 
-In-memory / SQLite ledger – debit the source account and credit the destination
+SQLite ledger (`Ledger`, formerly `InMemoryLedger`) – debit the source account and credit the destination
 Amounts are `int64 amount_cents` on the wire (no floating-point money)
 `PaymentStatus`: PENDING → AUTHORIZED → SETTLED, or FAILED / FLAGGED
 Request `currency` must match both accounts (seeded accounts are `USD`)

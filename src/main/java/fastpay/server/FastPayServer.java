@@ -1,7 +1,7 @@
 package fastpay.server;
 
 import fastpay.fraud.FraudGuard;
-import fastpay.ledger.InMemoryLedger;
+import fastpay.ledger.Ledger;
 import fastpay.security.AuthInterceptor;
 import fastpay.security.RateLimitInterceptor;
 import fastpay.security.RuntimeConfig;
@@ -27,20 +27,20 @@ public class FastPayServer {
 
     private final ScheduledExecutorService workerPool;
     private final Server server;
-    private final InMemoryLedger ledger;
+    private final Ledger ledger;
     private final HealthStatusManager health;
     private final boolean closeLedger;
     private final AtomicBoolean stopped = new AtomicBoolean(false);
 
     public FastPayServer(int port) throws IOException {
-        this(port, RuntimeConfig.plaintext(), new InMemoryLedger(), new FraudGuard(), true);
+        this(port, RuntimeConfig.plaintext(), new Ledger(), new FraudGuard(), true);
     }
 
     public FastPayServer(int port, RuntimeConfig config) throws IOException {
         this(port, config, openLedger(config), new FraudGuard(), true);
     }
 
-    public FastPayServer(int port, RuntimeConfig config, InMemoryLedger ledger, FraudGuard fraudGuard)
+    public FastPayServer(int port, RuntimeConfig config, Ledger ledger, FraudGuard fraudGuard)
             throws IOException {
         this(port, config, ledger, fraudGuard, false);
     }
@@ -48,7 +48,7 @@ public class FastPayServer {
     private FastPayServer(
             int port,
             RuntimeConfig config,
-            InMemoryLedger ledger,
+            Ledger ledger,
             FraudGuard fraudGuard,
             boolean closeLedger
     ) throws IOException {
@@ -78,12 +78,12 @@ public class FastPayServer {
         this.server = builder.build();
     }
 
-    private static InMemoryLedger openLedger(RuntimeConfig config) throws IOException {
+    private static Ledger openLedger(RuntimeConfig config) throws IOException {
         Path parent = config.db().getParent();
         if (parent != null) {
             Files.createDirectories(parent);
         }
-        return new InMemoryLedger(config.db(), config.paymentsToken(), config.adminToken());
+        return new Ledger(config.db(), config.paymentsToken(), config.adminToken());
     }
 
     @SuppressWarnings("deprecation")

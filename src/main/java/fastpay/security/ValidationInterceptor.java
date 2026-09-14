@@ -1,6 +1,6 @@
 package fastpay.security;
 
-import fastpay.ledger.InMemoryLedger;
+import fastpay.ledger.Ledger;
 import fastpay.ledger.InvalidTransactionException;
 import fastpay.proto.AccountQuery;
 import fastpay.proto.CreateApiKeyRequest;
@@ -31,7 +31,7 @@ public final class ValidationInterceptor implements ServerInterceptor {
             public void onMessage(ReqT message) {
                 try {
                     if (message instanceof TransactionRequest request) {
-                        InMemoryLedger.validate(request);
+                        Ledger.validate(request);
                     } else if (message instanceof AccountQuery query && query.getAccountId().isBlank()) {
                         throw new InvalidTransactionException("account_id is required");
                     } else if (message instanceof TransactionQuery query && query.getTransactionId().isBlank()) {
