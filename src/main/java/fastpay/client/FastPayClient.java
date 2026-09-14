@@ -3,6 +3,8 @@ package fastpay.client;
 import fastpay.ledger.InMemoryLedger;
 import fastpay.proto.AccountQuery;
 import fastpay.proto.AccountView;
+import fastpay.proto.ApiKeyRole;
+import fastpay.proto.CreateApiKeyRequest;
 import fastpay.proto.FastPayGrpc;
 import fastpay.proto.ListAccountsQuery;
 import fastpay.proto.ListAccountsView;
@@ -13,6 +15,7 @@ import fastpay.proto.OpenAccountRequest;
 import fastpay.proto.PaymentRecord;
 import fastpay.proto.PaymentStatus;
 import fastpay.proto.RefundRequest;
+import fastpay.proto.RevokeApiKeyRequest;
 import fastpay.proto.TransactionQuery;
 import fastpay.proto.TransactionRequest;
 import fastpay.proto.TransactionResponse;
@@ -78,12 +81,14 @@ public class FastPayClient {
                 .setAccountTo("ACC-222")
                 .setAmountCents(25075)
                 .setCurrency("USD")
+                .setMemo("invoice 123")
                 .setClientTimestampNanos(System.nanoTime())
                 .build();
 
         TransactionResponse resp = blockingStub.processTransaction(req);
         System.out.println("Unary response: " + resp.getMessage()
-                + " status=" + resp.getStatus() + " replayed=" + resp.getReplayed());
+                + " status=" + resp.getStatus() + " replayed=" + resp.getReplayed()
+                + " memo=" + resp.getMemo());
         TransactionResponse replay = blockingStub.processTransaction(req);
         System.out.println("Idempotent replay: " + replay.getMessage()
                 + " status=" + replay.getStatus() + " replayed=" + replay.getReplayed());
@@ -100,6 +105,7 @@ public class FastPayClient {
                 TransactionQuery.newBuilder().setTransactionId("txn-123").build());
         System.out.println("GetPayment: " + payment.getTransactionId()
                 + " status=" + payment.getStatus()
+                + " memo=" + payment.getMemo()
                 + " created_at_millis=" + payment.getCreatedAtMillis());
     }
 
@@ -156,6 +162,19 @@ public class FastPayClient {
                 System.out.println("Journal " + entry.getTransactionId()
                         + " " + entry.getAccountId()
                         + " delta=" + entry.getDeltaCents()));
+
+        String keyLabel = "demo-" + System.currentTimeMillis();
+        var created = adminStub.createApiKey(CreateApiKeyRequest.newBuilder()
+                .setLabel(keyLabel)
+                .setRole(ApiKeyRole.PAYMENTS)
+                .build());
+        System.out.println("Created API key label=" + created.getLabel()
+                + " role=" + created.getRole()
+                + " token=" + created.getToken().substring(0, Math.min(12, created.getToken().length())) + "...");
+        var revoked = adminStub.revokeApiKey(RevokeApiKeyRequest.newBuilder()
+                .setLabel(keyLabel)
+                .build());
+        System.out.println("Revoked API key label=" + revoked.getLabel());
     }
 
     public void runBulk() throws InterruptedException {

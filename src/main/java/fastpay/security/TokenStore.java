@@ -32,6 +32,20 @@ public final class TokenStore {
         rolesByHash.put(tokenHash, role);
     }
 
+    public void remove(String rawToken) {
+        if (rawToken == null || rawToken.isBlank()) {
+            return;
+        }
+        removeHash(sha256(rawToken));
+    }
+
+    public void removeHash(String tokenHash) {
+        if (tokenHash == null || tokenHash.isBlank()) {
+            return;
+        }
+        rolesByHash.remove(tokenHash);
+    }
+
     public Optional<Role> authenticate(String authorizationHeader) {
         String token = unwrap(authorizationHeader);
         if (token == null) {

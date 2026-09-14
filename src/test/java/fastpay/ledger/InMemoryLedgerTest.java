@@ -1,6 +1,8 @@
 package fastpay.ledger;
 
 import fastpay.proto.TransactionRequest;
+import fastpay.security.Auth;
+import fastpay.security.Role;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -259,6 +261,26 @@ class InMemoryLedgerTest {
         assertFalse(page2.hasNextPage());
 
         assertThrows(InvalidTransactionException.class, () -> ledger.listAccounts(2, "%%%"));
+    }
+
+    @Test
+    void storesMemoOnPayment() {
+        SubmitResult result = ledger.submit(request("txn-memo", "ACC-111", "ACC-222", 100)
+                .toBuilder().setMemo("rent").build());
+        assertEquals("rent", result.transaction().memo());
+        assertEquals("rent", ledger.find("txn-memo").orElseThrow().memo());
+    }
+
+    @Test
+    void createAndRevokeApiKey() {
+        CreatedApiKey created = ledger.createApiKey("ops", Role.PAYMENTS);
+        assertTrue(created.token().startsWith("fpk_"));
+        assertEquals(Role.PAYMENTS, ledger.tokenStore().authenticate(Auth.bearer(created.token())).orElseThrow());
+
+        String label = ledger.revokeApiKey(created.token(), "");
+        assertEquals("ops", label);
+        assertTrue(ledger.tokenStore().authenticate(Auth.bearer(created.token())).isEmpty());
+        assertThrows(InvalidTransactionException.class, () -> ledger.revokeApiKey("", "admin"));
     }
 
     private void assertJournalBalances(String accountId) {

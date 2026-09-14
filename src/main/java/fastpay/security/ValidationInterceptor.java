@@ -3,8 +3,10 @@ package fastpay.security;
 import fastpay.ledger.InMemoryLedger;
 import fastpay.ledger.InvalidTransactionException;
 import fastpay.proto.AccountQuery;
+import fastpay.proto.CreateApiKeyRequest;
 import fastpay.proto.OpenAccountRequest;
 import fastpay.proto.RefundRequest;
+import fastpay.proto.RevokeApiKeyRequest;
 import fastpay.proto.TransactionQuery;
 import fastpay.proto.TransactionRequest;
 import io.grpc.ForwardingServerCallListener;
@@ -38,6 +40,11 @@ public final class ValidationInterceptor implements ServerInterceptor {
                         throw new InvalidTransactionException("account_id is required");
                     } else if (message instanceof RefundRequest request && request.getTransactionId().isBlank()) {
                         throw new InvalidTransactionException("transaction_id is required");
+                    } else if (message instanceof CreateApiKeyRequest request && request.getLabel().isBlank()) {
+                        throw new InvalidTransactionException("label is required");
+                    } else if (message instanceof RevokeApiKeyRequest request
+                            && request.getToken().isBlank() && request.getLabel().isBlank()) {
+                        throw new InvalidTransactionException("token or label is required");
                     }
                     super.onMessage(message);
                 } catch (InvalidTransactionException e) {

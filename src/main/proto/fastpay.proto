@@ -18,6 +18,8 @@ service FastPay {
   rpc OpenAccount (OpenAccountRequest) returns (AccountView);
   rpc RefundTransaction (RefundRequest) returns (TransactionResponse);
   rpc ListJournal (ListJournalQuery) returns (ListJournalView);
+  rpc CreateApiKey (CreateApiKeyRequest) returns (CreateApiKeyView);
+  rpc RevokeApiKey (RevokeApiKeyRequest) returns (RevokeApiKeyView);
 }
 
 enum PaymentStatus {
@@ -36,6 +38,7 @@ message TransactionRequest {
   int64 amount_cents = 4;
   string currency = 5;
   int64 client_timestamp_nanos = 6;
+  string memo = 7;
 }
 
 message TransactionResponse {
@@ -47,6 +50,7 @@ message TransactionResponse {
   bool replayed = 6;
   PaymentStatus status = 7;
   int64 amount_cents = 8;
+  string memo = 9;
 }
 
 message TransactionQuery {
@@ -109,6 +113,7 @@ message PaymentRecord {
   PaymentStatus status = 8;
   int64 created_at_millis = 9;
   string refund_of = 10;
+  string memo = 11;
 }
 
 message ListJournalQuery {
@@ -127,4 +132,32 @@ message JournalRecord {
   string account_id = 2;
   int64 delta_cents = 3;
   string currency = 4;
+}
+
+enum ApiKeyRole {
+  API_KEY_ROLE_UNSPECIFIED = 0;
+  PAYMENTS = 1;
+  ADMIN = 2;
+}
+
+message CreateApiKeyRequest {
+  string label = 1;
+  ApiKeyRole role = 2;
+}
+
+message CreateApiKeyView {
+  string label = 1;
+  ApiKeyRole role = 2;
+  // Plaintext secret, returned only at creation.
+  string token = 3;
+}
+
+message RevokeApiKeyRequest {
+  string token = 1;
+  string label = 2;
+}
+
+message RevokeApiKeyView {
+  string label = 1;
+  bool revoked = 2;
 }

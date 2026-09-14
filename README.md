@@ -34,6 +34,8 @@ Seeded demo accounts: ACC-111, ACC-222, ACC-AAA, ACC-BBB ($10,000.00) and ACC-PO
 
 OpenAccount – create additional accounts (`opening_cents` of `0` means $10,000.00)
 
+Memo – optional `memo` on `TransactionRequest` / `PaymentRecord` (max 280 characters)
+
 RefundTransaction – reverse a settled payment back to the source account.
 Idempotent: default refund id is `refund:{transaction_id}`. Failed (NSF / flagged)
 payments cannot be refunded. A refund cannot be refunded.
@@ -51,8 +53,11 @@ Pagination – `ListAccounts`, `ListTransactions`, and `ListJournal` take
 
 Auth – hashed API keys in SQLite with two roles:
 - `pay-token` (PAYMENTS): transfers, refunds, status, GetAccount, OpenAccount, ListAccounts, list one account
-- `admin-token` (ADMIN): also list all payments and the journal
+- `admin-token` (ADMIN): also list all payments and the journal, plus `CreateApiKey` / `RevokeApiKey`
 Override with `FASTPAY_PAY_TOKEN` / `FASTPAY_ADMIN_TOKEN`
+
+CreateApiKey returns the plaintext secret once (`fpk_…`). Revoke by `token` or unique
+`label`. The last ADMIN key cannot be revoked. Seeded labels are `payments` and `admin`.
 
 Health and reflection – `grpc.health.v1.Health` and server reflection do **not**
 require a bearer token, so `grpc_health_probe` / `grpcurl` work without `-H`.
