@@ -5,6 +5,7 @@ import fastpay.proto.TransactionRequest;
 import fastpay.security.Auth;
 import fastpay.security.Role;
 import fastpay.security.TokenStore;
+import fastpay.webhook.PaymentEvents;
 
 import java.nio.file.Path;
 import java.sql.Connection;
@@ -21,7 +22,8 @@ import java.util.UUID;
 
 /**
  * SQLite-backed ledger (file or in-memory). Formerly {@code InMemoryLedger}.
- * {@code transaction_id} is the idempotency key.
+ * {@code transaction_id} is the idempotency key. Settled, failed, and flagged
+ * payments also write a transactional webhook outbox row.
  */
 public final class Ledger implements AutoCloseable {
     public static final long DEFAULT_OPENING_CENTS = 1_000_000L;
@@ -123,6 +125,21 @@ public final class Ledger implements AutoCloseable {
             statement.execute("CREATE INDEX IF NOT EXISTS payments_created_txn ON payments(created_at, transaction_id)");
             statement.execute("CREATE INDEX IF NOT EXISTS journal_account ON journal(account_id)");
             statement.execute("CREATE UNIQUE INDEX IF NOT EXISTS api_keys_label ON api_keys(label)");
+            statement.execute("""
+                    CREATE TABLE IF NOT EXISTS webhook_outbox (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      transaction_id TEXT NOT NULL,
+                      event_type TEXT NOT NULL,
+                      payload TEXT NOT NULL,
+                      status TEXT NOT NULL,
+                      attempts INTEGER NOT NULL,
+                      next_attempt_at INTEGER NOT NULL,
+                      last_error TEXT,
+                      created_at INTEGER NOT NULL,
+                      UNIQUE (transaction_id, event_type)
+                    )
+                    """);
+            statement.execute("CREATE INDEX IF NOT EXISTS outbox_pending ON webhook_outbox(status, next_attempt_at)");
         }
     }
 
@@ -140,6 +157,7 @@ public final class Ledger implements AutoCloseable {
         try (Statement statement = conn.createStatement()) {
             statement.execute("CREATE INDEX IF NOT EXISTS payments_refund_of ON payments(refund_of)");
             statement.execute("CREATE UNIQUE INDEX IF NOT EXISTS api_keys_label ON api_keys(label)");
+            statement.execute("CREATE INDEX IF NOT EXISTS outbox_pending ON webhook_outbox(status, next_attempt_at)");
         }
     }
 
@@ -785,6 +803,133 @@ public final class Ledger implements AutoCloseable {
             ps.setString(11, posted.memo() == null ? "" : posted.memo());
             ps.executeUpdate();
         }
+        insertOutbox(posted);
+    }
+
+    private void insertOutbox(PostedTransaction posted) throws SQLException {
+        var event = PaymentEvents.eventType(posted.status());
+        if (event.isEmpty()) {
+            return;
+        }
+        String eventType = event.get();
+        String payload = PaymentEvents.payload(posted, eventType);
+        long now = System.currentTimeMillis();
+        try (PreparedStatement ps = conn.prepareStatement("""
+                INSERT INTO webhook_outbox(transaction_id, event_type, payload, status, attempts,
+                  next_attempt_at, last_error, created_at)
+                VALUES (?, ?, ?, ?, 0, ?, NULL, ?)
+                """)) {
+            ps.setString(1, posted.transactionId());
+            ps.setString(2, eventType);
+            ps.setString(3, payload);
+            ps.setString(4, OutboxRecord.PENDING);
+            ps.setLong(5, now);
+            ps.setLong(6, now);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            if (String.valueOf(e.getMessage()).toUpperCase(Locale.US).contains("UNIQUE")) {
+                return;
+            }
+            throw e;
+        }
+    }
+
+    public List<OutboxRecord> pendingOutbox(int limit) {
+        int cap = limit <= 0 ? 20 : Math.min(limit, 100);
+        long now = System.currentTimeMillis();
+        synchronized (lock) {
+            try (PreparedStatement ps = conn.prepareStatement("""
+                    SELECT id, transaction_id, event_type, payload, status, attempts, next_attempt_at, last_error
+                    FROM webhook_outbox
+                    WHERE status = ? AND next_attempt_at <= ?
+                    ORDER BY id ASC
+                    LIMIT ?
+                    """)) {
+                ps.setString(1, OutboxRecord.PENDING);
+                ps.setLong(2, now);
+                ps.setInt(3, cap);
+                try (ResultSet rs = ps.executeQuery()) {
+                    List<OutboxRecord> rows = new ArrayList<>();
+                    while (rs.next()) {
+                        rows.add(mapOutbox(rs));
+                    }
+                    return List.copyOf(rows);
+                }
+            } catch (SQLException e) {
+                throw new IllegalStateException(e);
+            }
+        }
+    }
+
+    public List<OutboxRecord> listOutbox() {
+        synchronized (lock) {
+            try (Statement statement = conn.createStatement();
+                 ResultSet rs = statement.executeQuery("""
+                         SELECT id, transaction_id, event_type, payload, status, attempts, next_attempt_at, last_error
+                         FROM webhook_outbox ORDER BY id ASC
+                         """)) {
+                List<OutboxRecord> rows = new ArrayList<>();
+                while (rs.next()) {
+                    rows.add(mapOutbox(rs));
+                }
+                return List.copyOf(rows);
+            } catch (SQLException e) {
+                throw new IllegalStateException(e);
+            }
+        }
+    }
+
+    public void markOutboxDelivered(long id) {
+        updateOutbox(id, OutboxRecord.DELIVERED, -1, 0, null);
+    }
+
+    public void markOutboxFailed(long id, String error) {
+        updateOutbox(id, OutboxRecord.FAILED, -1, 0, error);
+    }
+
+    public void markOutboxRetry(long id, int attempts, long nextAttemptAtMillis, String error) {
+        updateOutbox(id, OutboxRecord.PENDING, attempts, nextAttemptAtMillis, error);
+    }
+
+    private void updateOutbox(long id, String status, int attempts, long nextAttemptAtMillis, String error) {
+        synchronized (lock) {
+            try {
+                if (attempts < 0) {
+                    try (PreparedStatement ps = conn.prepareStatement(
+                            "UPDATE webhook_outbox SET status = ?, last_error = ? WHERE id = ?")) {
+                        ps.setString(1, status);
+                        ps.setString(2, error);
+                        ps.setLong(3, id);
+                        ps.executeUpdate();
+                    }
+                } else {
+                    try (PreparedStatement ps = conn.prepareStatement(
+                            "UPDATE webhook_outbox SET status = ?, attempts = ?, next_attempt_at = ?, last_error = ? WHERE id = ?")) {
+                        ps.setString(1, status);
+                        ps.setInt(2, attempts);
+                        ps.setLong(3, nextAttemptAtMillis);
+                        ps.setString(4, error);
+                        ps.setLong(5, id);
+                        ps.executeUpdate();
+                    }
+                }
+            } catch (SQLException e) {
+                throw new IllegalStateException(e);
+            }
+        }
+    }
+
+    private static OutboxRecord mapOutbox(ResultSet rs) throws SQLException {
+        return new OutboxRecord(
+                rs.getLong(1),
+                rs.getString(2),
+                rs.getString(3),
+                rs.getString(4),
+                rs.getString(5),
+                rs.getInt(6),
+                rs.getLong(7),
+                rs.getString(8)
+        );
     }
 
     private void insertJournal(String txnId, String accountId, long delta, String currency) throws SQLException {

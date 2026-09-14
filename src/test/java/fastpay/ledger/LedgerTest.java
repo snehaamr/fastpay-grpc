@@ -1,8 +1,10 @@
 package fastpay.ledger;
 
+import fastpay.proto.PaymentStatus;
 import fastpay.proto.TransactionRequest;
 import fastpay.security.Auth;
 import fastpay.security.Role;
+import fastpay.webhook.PaymentEvents;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -281,6 +283,24 @@ class LedgerTest {
         assertEquals("ops", label);
         assertTrue(ledger.tokenStore().authenticate(Auth.bearer(created.token())).isEmpty());
         assertThrows(InvalidTransactionException.class, () -> ledger.revokeApiKey("", "admin"));
+    }
+
+    @Test
+    void outboxRecordsSettledFailedAndFlaggedOnce() {
+        ledger.submit(request("txn-hook-ok", "ACC-111", "ACC-222", 100));
+        ledger.submit(request("txn-hook-nsf", "ACC-POOR", "ACC-222", 500));
+        ledger.reject(request("txn-hook-flag", "ACC-111", "ACC-222", 100),
+                PaymentStatus.FLAGGED, "flagged: amount");
+        ledger.submit(request("txn-hook-ok", "ACC-111", "ACC-222", 100));
+
+        List<OutboxRecord> rows = ledger.listOutbox();
+        assertEquals(3, rows.size());
+        assertEquals(PaymentEvents.SETTLED, rows.get(0).eventType());
+        assertEquals("txn-hook-ok", rows.get(0).transactionId());
+        assertEquals(OutboxRecord.PENDING, rows.get(0).status());
+        assertTrue(rows.get(0).payload().contains("\"event\":\"payment.settled\""));
+        assertEquals(PaymentEvents.FAILED, rows.get(1).eventType());
+        assertEquals(PaymentEvents.FLAGGED, rows.get(2).eventType());
     }
 
     private void assertJournalBalances(String accountId) {

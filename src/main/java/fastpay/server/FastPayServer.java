@@ -7,6 +7,7 @@ import fastpay.security.RateLimitInterceptor;
 import fastpay.security.RuntimeConfig;
 import fastpay.security.Tls;
 import fastpay.security.ValidationInterceptor;
+import fastpay.webhook.WebhookDispatcher;
 import io.grpc.Server;
 import io.grpc.health.v1.HealthCheckResponse;
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
@@ -29,6 +30,7 @@ public class FastPayServer {
     private final Server server;
     private final Ledger ledger;
     private final HealthStatusManager health;
+    private final WebhookDispatcher webhooks;
     private final boolean closeLedger;
     private final AtomicBoolean stopped = new AtomicBoolean(false);
 
@@ -54,6 +56,7 @@ public class FastPayServer {
     ) throws IOException {
         this.ledger = ledger;
         this.closeLedger = closeLedger;
+        this.webhooks = new WebhookDispatcher(ledger, config.webhookUrl(), config.webhookSecret());
         int threads = Math.max(4, Runtime.getRuntime().availableProcessors() * 2);
         this.workerPool = Executors.newScheduledThreadPool(threads);
         this.health = new HealthStatusManager();
@@ -76,6 +79,7 @@ public class FastPayServer {
             builder.sslContext(Tls.serverContext(config.cert(), config.key()));
         }
         this.server = builder.build();
+        this.webhooks.start(workerPool);
     }
 
     private static Ledger openLedger(RuntimeConfig config) throws IOException {
@@ -106,6 +110,7 @@ public class FastPayServer {
         }
         health.setStatus("", HealthCheckResponse.ServingStatus.NOT_SERVING);
         health.setStatus("fastpay.FastPay", HealthCheckResponse.ServingStatus.NOT_SERVING);
+        webhooks.close();
         server.shutdown();
         workerPool.shutdown();
         try {
@@ -130,6 +135,7 @@ public class FastPayServer {
         FastPayServer server = new FastPayServer(DEFAULT_PORT, config);
         server.start();
         System.out.println("tls=" + config.tls() + " db=" + config.db()
+                + " webhook=" + formatWebhook(config)
                 + " rate_limit=" + formatRateLimit(config)
                 + " roles=pay-token/admin-token (override FASTPAY_PAY_TOKEN / FASTPAY_ADMIN_TOKEN)");
         Runtime.getRuntime().addShutdownHook(new Thread(server::stop));
@@ -141,5 +147,12 @@ public class FastPayServer {
             return "off";
         }
         return config.rateLimitQps() + "/s burst=" + config.rateLimitBurst();
+    }
+
+    private static String formatWebhook(RuntimeConfig config) {
+        if (config.webhookUrl() == null || config.webhookUrl().isBlank()) {
+            return "off";
+        }
+        return config.webhookUrl();
     }
 }

@@ -69,6 +69,12 @@ each message. Health and reflection are unlimited. Returns `RESOURCE_EXHAUSTED`
 with `grpc-retry-pushback-ms`. Override with `FASTPAY_RATE_LIMIT_QPS` /
 `FASTPAY_RATE_LIMIT_BURST` (`0` disables the limiter).
 
+Webhooks – a transactional outbox row is written in the same commit when a
+payment is `SETTLED`, `FAILED`, or `FLAGGED` (`payment.settled` /
+`payment.failed` / `payment.flagged`). Replays do not enqueue a second event.
+Set `FASTPAY_WEBHOOK_URL` to POST JSON (optional `FASTPAY_WEBHOOK_SECRET`
+adds `X-FastPay-Signature: sha256=…`). Empty URL keeps rows pending.
+
 TLS – private keys are **not** committed. `FASTPAY_TLS=true` generates localhost
 certs via openssl if `certs/server.key` is missing (`scripts/gen-certs.sh`).
 
