@@ -21,6 +21,8 @@ ENV FASTPAY_CERT=/opt/fastpay/certs/server.crt
 ENV FASTPAY_KEY=/opt/fastpay/certs/server.key
 ENV FASTPAY_TRUST_CERT=/opt/fastpay/certs/ca.crt
 ENV FASTPAY_DB=/data/fastpay.db
+ENV FASTPAY_WEBHOOK_URL=
+ENV FASTPAY_WEBHOOK_SECRET=
 ENV FASTPAY_TLS=false
 VOLUME ["/data"]
 EXPOSE 6565
