@@ -2,6 +2,7 @@ package fastpay.server;
 
 import fastpay.fraud.FraudGuard;
 import fastpay.ledger.AccountSnapshot;
+import fastpay.ledger.CreatedApiKey;
 import fastpay.ledger.InMemoryLedger;
 import fastpay.ledger.InvalidTransactionException;
 import fastpay.ledger.JournalEntry;
@@ -10,6 +11,9 @@ import fastpay.ledger.PostedTransaction;
 import fastpay.ledger.SubmitResult;
 import fastpay.proto.AccountQuery;
 import fastpay.proto.AccountView;
+import fastpay.proto.ApiKeyRole;
+import fastpay.proto.CreateApiKeyRequest;
+import fastpay.proto.CreateApiKeyView;
 import fastpay.proto.FastPayGrpc;
 import fastpay.proto.JournalRecord;
 import fastpay.proto.ListAccountsQuery;
@@ -22,6 +26,8 @@ import fastpay.proto.OpenAccountRequest;
 import fastpay.proto.PaymentRecord;
 import fastpay.proto.PaymentStatus;
 import fastpay.proto.RefundRequest;
+import fastpay.proto.RevokeApiKeyRequest;
+import fastpay.proto.RevokeApiKeyView;
 import fastpay.proto.TransactionQuery;
 import fastpay.proto.TransactionRequest;
 import fastpay.proto.TransactionResponse;
@@ -386,9 +392,62 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
         }));
     }
 
+    @Override
+    public void createApiKey(CreateApiKeyRequest req, StreamObserver<CreateApiKeyView> respObs) {
+        if (AuthContext.currentRole() != Role.ADMIN) {
+            respObs.onError(Status.PERMISSION_DENIED
+                    .withDescription("admin token required to create api keys")
+                    .asRuntimeException());
+            return;
+        }
+        Context context = Context.current();
+        workerPool.execute(context.wrap(() -> {
+            try {
+                CreatedApiKey created = ledger.createApiKey(req.getLabel(), toRole(req.getRole()));
+                respObs.onNext(CreateApiKeyView.newBuilder()
+                        .setLabel(created.label())
+                        .setRole(toProtoRole(created.role()))
+                        .setToken(created.token())
+                        .build());
+                respObs.onCompleted();
+            } catch (InvalidTransactionException e) {
+                respObs.onError(invalidStatus(e).asRuntimeException());
+            } catch (RuntimeException e) {
+                log.error("createApiKey failed", e);
+                respObs.onError(Status.INTERNAL.withDescription("api key error").asRuntimeException());
+            }
+        }));
+    }
+
+    @Override
+    public void revokeApiKey(RevokeApiKeyRequest req, StreamObserver<RevokeApiKeyView> respObs) {
+        if (AuthContext.currentRole() != Role.ADMIN) {
+            respObs.onError(Status.PERMISSION_DENIED
+                    .withDescription("admin token required to revoke api keys")
+                    .asRuntimeException());
+            return;
+        }
+        Context context = Context.current();
+        workerPool.execute(context.wrap(() -> {
+            try {
+                String label = ledger.revokeApiKey(req.getToken(), req.getLabel());
+                respObs.onNext(RevokeApiKeyView.newBuilder()
+                        .setLabel(label)
+                        .setRevoked(true)
+                        .build());
+                respObs.onCompleted();
+            } catch (InvalidTransactionException e) {
+                respObs.onError(invalidStatus(e).asRuntimeException());
+            } catch (RuntimeException e) {
+                log.error("revokeApiKey failed", e);
+                respObs.onError(Status.INTERNAL.withDescription("api key error").asRuntimeException());
+            }
+        }));
+    }
+
     private TransactionResponse toResponse(SubmitResult result, long startNanos) {
         PostedTransaction posted = result.transaction();
-        return TransactionResponse.newBuilder()
+        TransactionResponse.Builder builder = TransactionResponse.newBuilder()
                 .setTransactionId(posted.transactionId())
                 .setSuccess(posted.success())
                 .setMessage(posted.message())
@@ -396,8 +455,11 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
                 .setStatus(posted.status())
                 .setAmountCents(posted.amountCents())
                 .setServerTimestampNanos(nowNanos())
-                .setProcessingNanos(nowNanos() - startNanos)
-                .build();
+                .setProcessingNanos(nowNanos() - startNanos);
+        if (posted.memo() != null && !posted.memo().isBlank()) {
+            builder.setMemo(posted.memo());
+        }
+        return builder.build();
     }
 
     private static AccountView toAccountView(AccountSnapshot snapshot) {
@@ -422,7 +484,26 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
         if (payment.refundOf() != null && !payment.refundOf().isBlank()) {
             record.setRefundOf(payment.refundOf());
         }
+        if (payment.memo() != null && !payment.memo().isBlank()) {
+            record.setMemo(payment.memo());
+        }
         return record.build();
+    }
+
+    static Role toRole(ApiKeyRole role) {
+        return switch (role) {
+            case PAYMENTS -> Role.PAYMENTS;
+            case ADMIN -> Role.ADMIN;
+            case API_KEY_ROLE_UNSPECIFIED, UNRECOGNIZED ->
+                    throw new InvalidTransactionException("role is required");
+        };
+    }
+
+    static ApiKeyRole toProtoRole(Role role) {
+        return switch (role) {
+            case PAYMENTS -> ApiKeyRole.PAYMENTS;
+            case ADMIN -> ApiKeyRole.ADMIN;
+        };
     }
 
     static Status invalidStatus(InvalidTransactionException e) {

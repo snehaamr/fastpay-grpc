@@ -4,6 +4,8 @@ import fastpay.fraud.FraudGuard;
 import fastpay.ledger.InMemoryLedger;
 import fastpay.proto.AccountQuery;
 import fastpay.proto.AccountView;
+import fastpay.proto.ApiKeyRole;
+import fastpay.proto.CreateApiKeyRequest;
 import fastpay.proto.FastPayGrpc;
 import fastpay.proto.ListAccountsQuery;
 import fastpay.proto.ListAccountsView;
@@ -14,6 +16,7 @@ import fastpay.proto.ListTransactionsView;
 import fastpay.proto.OpenAccountRequest;
 import fastpay.proto.PaymentStatus;
 import fastpay.proto.RefundRequest;
+import fastpay.proto.RevokeApiKeyRequest;
 import fastpay.proto.TransactionQuery;
 import fastpay.proto.TransactionRequest;
 import fastpay.proto.TransactionResponse;
@@ -458,6 +461,92 @@ class FastPayServiceImplTest {
                         .build())
         );
         assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+    }
+
+    @Test
+    void processTransactionPersistsMemo() {
+        TransactionRequest req = request("txn-memo", "ACC-111", "ACC-222", 100).toBuilder()
+                .setMemo("payroll week 12")
+                .build();
+        TransactionResponse response = stub.processTransaction(req);
+        assertEquals("payroll week 12", response.getMemo());
+        var payment = stub.getPayment(TransactionQuery.newBuilder().setTransactionId("txn-memo").build());
+        assertEquals("payroll week 12", payment.getMemo());
+        assertEquals("payroll week 12", stub.processTransaction(req).getMemo());
+    }
+
+    @Test
+    void memoTooLongIsRejected() {
+        StatusRuntimeException ex = assertThrows(
+                StatusRuntimeException.class,
+                () -> stub.processTransaction(request("txn-memo-long", "ACC-111", "ACC-222", 100)
+                        .toBuilder()
+                        .setMemo("x".repeat(InMemoryLedger.MAX_MEMO_LENGTH + 1))
+                        .build())
+        );
+        assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+    }
+
+    @Test
+    void adminCanCreateAndRevokeApiKey() {
+        FastPayGrpc.FastPayBlockingStub admin = stubFor(Auth.ADMIN_TOKEN);
+        var created = admin.createApiKey(CreateApiKeyRequest.newBuilder()
+                .setLabel("payroll")
+                .setRole(ApiKeyRole.PAYMENTS)
+                .build());
+        assertEquals("payroll", created.getLabel());
+        assertEquals(ApiKeyRole.PAYMENTS, created.getRole());
+        assertTrue(created.getToken().startsWith("fpk_"));
+
+        FastPayGrpc.FastPayBlockingStub payroll = stubFor(created.getToken());
+        assertTrue(payroll.processTransaction(request("txn-payroll", "ACC-111", "ACC-222", 50)).getSuccess());
+
+        var revoked = admin.revokeApiKey(RevokeApiKeyRequest.newBuilder()
+                .setLabel("payroll")
+                .build());
+        assertTrue(revoked.getRevoked());
+        StatusRuntimeException ex = assertThrows(
+                StatusRuntimeException.class,
+                () -> payroll.processTransaction(request("txn-payroll-2", "ACC-111", "ACC-222", 50))
+        );
+        assertEquals(Status.Code.UNAUTHENTICATED, ex.getStatus().getCode());
+    }
+
+    @Test
+    void paymentsTokenCannotCreateApiKey() {
+        StatusRuntimeException ex = assertThrows(
+                StatusRuntimeException.class,
+                () -> stub.createApiKey(CreateApiKeyRequest.newBuilder()
+                        .setLabel("nope")
+                        .setRole(ApiKeyRole.PAYMENTS)
+                        .build())
+        );
+        assertEquals(Status.Code.PERMISSION_DENIED, ex.getStatus().getCode());
+    }
+
+    @Test
+    void cannotRevokeLastAdminKey() {
+        FastPayGrpc.FastPayBlockingStub admin = stubFor(Auth.ADMIN_TOKEN);
+        StatusRuntimeException ex = assertThrows(
+                StatusRuntimeException.class,
+                () -> admin.revokeApiKey(RevokeApiKeyRequest.newBuilder()
+                        .setLabel("admin")
+                        .build())
+        );
+        assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
+    }
+
+    @Test
+    void duplicateApiKeyLabelIsAlreadyExists() {
+        FastPayGrpc.FastPayBlockingStub admin = stubFor(Auth.ADMIN_TOKEN);
+        StatusRuntimeException ex = assertThrows(
+                StatusRuntimeException.class,
+                () -> admin.createApiKey(CreateApiKeyRequest.newBuilder()
+                        .setLabel("payments")
+                        .setRole(ApiKeyRole.PAYMENTS)
+                        .build())
+        );
+        assertEquals(Status.Code.ALREADY_EXISTS, ex.getStatus().getCode());
     }
 
     @Test

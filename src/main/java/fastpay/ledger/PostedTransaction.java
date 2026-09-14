@@ -12,7 +12,8 @@ public record PostedTransaction(
         String message,
         PaymentStatus status,
         long createdAtMillis,
-        String refundOf
+        String refundOf,
+        String memo
 ) {
     public PostedTransaction(
             String transactionId,
@@ -34,7 +35,34 @@ public record PostedTransaction(
                 message,
                 status,
                 System.currentTimeMillis(),
-                null
+                null,
+                ""
+        );
+    }
+
+    public PostedTransaction(
+            String transactionId,
+            String accountFrom,
+            String accountTo,
+            long amountCents,
+            String currency,
+            boolean success,
+            String message,
+            PaymentStatus status,
+            String memo
+    ) {
+        this(
+                transactionId,
+                accountFrom,
+                accountTo,
+                amountCents,
+                currency,
+                success,
+                message,
+                status,
+                System.currentTimeMillis(),
+                null,
+                memo == null ? "" : memo
         );
     }
 

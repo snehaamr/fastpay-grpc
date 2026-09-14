@@ -27,6 +27,7 @@ public final class InMemoryLedger implements AutoCloseable {
     public static final long DEFAULT_OPENING_CENTS = 1_000_000L;
     public static final long POOR_OPENING_CENTS = 100L;
     public static final String DEFAULT_CURRENCY = "USD";
+    public static final int MAX_MEMO_LENGTH = 280;
 
     private final Connection conn;
     private final Object lock = new Object();
@@ -98,7 +99,8 @@ public final class InMemoryLedger implements AutoCloseable {
                       message TEXT NOT NULL,
                       status TEXT NOT NULL,
                       created_at INTEGER NOT NULL,
-                      refund_of TEXT
+                      refund_of TEXT,
+                      memo TEXT
                     )
                     """);
             statement.execute("""
@@ -120,6 +122,7 @@ public final class InMemoryLedger implements AutoCloseable {
             statement.execute("CREATE INDEX IF NOT EXISTS payments_created_at ON payments(created_at)");
             statement.execute("CREATE INDEX IF NOT EXISTS payments_created_txn ON payments(created_at, transaction_id)");
             statement.execute("CREATE INDEX IF NOT EXISTS journal_account ON journal(account_id)");
+            statement.execute("CREATE UNIQUE INDEX IF NOT EXISTS api_keys_label ON api_keys(label)");
         }
     }
 
@@ -129,8 +132,14 @@ public final class InMemoryLedger implements AutoCloseable {
                 statement.execute("ALTER TABLE payments ADD COLUMN refund_of TEXT");
             }
         }
+        if (!hasColumn("payments", "memo")) {
+            try (Statement statement = conn.createStatement()) {
+                statement.execute("ALTER TABLE payments ADD COLUMN memo TEXT");
+            }
+        }
         try (Statement statement = conn.createStatement()) {
             statement.execute("CREATE INDEX IF NOT EXISTS payments_refund_of ON payments(refund_of)");
+            statement.execute("CREATE UNIQUE INDEX IF NOT EXISTS api_keys_label ON api_keys(label)");
         }
     }
 
@@ -183,6 +192,103 @@ public final class InMemoryLedger implements AutoCloseable {
             ps.executeUpdate();
         }
         tokens.put(rawToken, role);
+    }
+
+    public CreatedApiKey createApiKey(String label, Role role) {
+        String resolved = normalizeLabel(label);
+        if (role == null) {
+            throw new InvalidTransactionException("role is required");
+        }
+        String token = newRawToken();
+        synchronized (lock) {
+            try {
+                insertApiKey(token, role, resolved);
+            } catch (SQLException e) {
+                if (String.valueOf(e.getMessage()).contains("UNIQUE")) {
+                    throw new InvalidTransactionException("api key already exists: " + resolved);
+                }
+                throw new IllegalStateException(e);
+            }
+        }
+        return new CreatedApiKey(resolved, role, token);
+    }
+
+    public String revokeApiKey(String rawToken, String label) {
+        synchronized (lock) {
+            try {
+                String hash;
+                String resolvedLabel;
+                Role role;
+                if (!blank(rawToken)) {
+                    hash = TokenStore.sha256(rawToken);
+                    try (PreparedStatement ps = conn.prepareStatement(
+                            "SELECT token_hash, role, label FROM api_keys WHERE token_hash = ?")) {
+                        ps.setString(1, hash);
+                        try (ResultSet rs = ps.executeQuery()) {
+                            if (!rs.next()) {
+                                throw new InvalidTransactionException("unknown api key");
+                            }
+                            role = Role.valueOf(rs.getString(2));
+                            resolvedLabel = rs.getString(3);
+                        }
+                    }
+                } else if (!blank(label)) {
+                    try (PreparedStatement ps = conn.prepareStatement(
+                            "SELECT token_hash, role, label FROM api_keys WHERE label = ?")) {
+                        ps.setString(1, normalizeLabel(label));
+                        try (ResultSet rs = ps.executeQuery()) {
+                            if (!rs.next()) {
+                                throw new InvalidTransactionException("unknown api key");
+                            }
+                            hash = rs.getString(1);
+                            role = Role.valueOf(rs.getString(2));
+                            resolvedLabel = rs.getString(3);
+                        }
+                    }
+                } else {
+                    throw new InvalidTransactionException("token or label is required");
+                }
+                if (role == Role.ADMIN && countAdminKeys() <= 1) {
+                    throw new InvalidTransactionException("cannot revoke the last admin key");
+                }
+                try (PreparedStatement ps = conn.prepareStatement(
+                        "DELETE FROM api_keys WHERE token_hash = ?")) {
+                    ps.setString(1, hash);
+                    ps.executeUpdate();
+                }
+                tokens.removeHash(hash);
+                return resolvedLabel;
+            } catch (InvalidTransactionException e) {
+                throw e;
+            } catch (SQLException e) {
+                throw new IllegalStateException(e);
+            }
+        }
+    }
+
+    private int countAdminKeys() throws SQLException {
+        try (Statement statement = conn.createStatement();
+             ResultSet rs = statement.executeQuery(
+                     "SELECT COUNT(*) FROM api_keys WHERE role = 'ADMIN'")) {
+            return rs.next() ? rs.getInt(1) : 0;
+        }
+    }
+
+    public static String newRawToken() {
+        byte[] bytes = new byte[24];
+        new java.security.SecureRandom().nextBytes(bytes);
+        return "fpk_" + java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+    }
+
+    public static String normalizeLabel(String label) {
+        if (label == null || label.isBlank()) {
+            throw new InvalidTransactionException("label is required");
+        }
+        String resolved = label.trim();
+        if (resolved.length() > 64) {
+            throw new InvalidTransactionException("label must be at most 64 characters");
+        }
+        return resolved;
     }
 
     private void loadApiKeys() throws SQLException {
@@ -459,7 +565,8 @@ public final class InMemoryLedger implements AutoCloseable {
                         request.getCurrency(),
                         false,
                         message,
-                        status
+                        status,
+                        request.getMemo()
                 );
                 insertPayment(rejected);
                 conn.commit();
@@ -534,7 +641,8 @@ public final class InMemoryLedger implements AutoCloseable {
                                 + " from " + payer + " to " + payee,
                         PaymentStatus.SETTLED,
                         System.currentTimeMillis(),
-                        original.transactionId()
+                        original.transactionId(),
+                        original.memo() == null ? "" : original.memo()
                 );
                 insertPayment(posted);
                 insertJournal(posted.transactionId(), payer, -cents, posted.currency());
@@ -578,7 +686,8 @@ public final class InMemoryLedger implements AutoCloseable {
                     false,
                     "Insufficient funds: " + fromId + " has " + formatAmount(from.balanceCents())
                             + " " + currency + ", need " + formatAmount(cents),
-                    PaymentStatus.FAILED
+                    PaymentStatus.FAILED,
+                    request.getMemo()
             );
             insertPayment(rejected);
             return rejected;
@@ -594,7 +703,8 @@ public final class InMemoryLedger implements AutoCloseable {
                 true,
                 "Processed " + formatAmount(cents) + " " + currency
                         + " from " + fromId + " to " + toId,
-                PaymentStatus.SETTLED
+                PaymentStatus.SETTLED,
+                request.getMemo()
         );
         insertPayment(posted);
         insertJournal(posted.transactionId(), fromId, -cents, posted.currency());
@@ -659,8 +769,8 @@ public final class InMemoryLedger implements AutoCloseable {
     private void insertPayment(PostedTransaction posted) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement("""
                 INSERT INTO payments(transaction_id, account_from, account_to, amount_cents, currency,
-                  success, message, status, created_at, refund_of)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  success, message, status, created_at, refund_of, memo)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """)) {
             ps.setString(1, posted.transactionId());
             ps.setString(2, posted.accountFrom());
@@ -672,6 +782,7 @@ public final class InMemoryLedger implements AutoCloseable {
             ps.setString(8, posted.status().name());
             ps.setLong(9, posted.createdAtMillis());
             ps.setString(10, posted.refundOf());
+            ps.setString(11, posted.memo() == null ? "" : posted.memo());
             ps.executeUpdate();
         }
     }
@@ -692,6 +803,10 @@ public final class InMemoryLedger implements AutoCloseable {
         if (refundOf != null && refundOf.isBlank()) {
             refundOf = null;
         }
+        String memo = rs.getString("memo");
+        if (memo == null) {
+            memo = "";
+        }
         return new PostedTransaction(
                 rs.getString("transaction_id"),
                 rs.getString("account_from"),
@@ -702,7 +817,8 @@ public final class InMemoryLedger implements AutoCloseable {
                 rs.getString("message"),
                 PaymentStatus.valueOf(rs.getString("status")),
                 rs.getLong("created_at"),
-                refundOf
+                refundOf,
+                memo
         );
     }
 
@@ -732,6 +848,9 @@ public final class InMemoryLedger implements AutoCloseable {
         }
         if (request.getAmountCents() <= 0) {
             throw new InvalidTransactionException("amount_cents must be a positive integer");
+        }
+        if (request.getMemo().length() > MAX_MEMO_LENGTH) {
+            throw new InvalidTransactionException("memo must be at most " + MAX_MEMO_LENGTH + " characters");
         }
     }
 
