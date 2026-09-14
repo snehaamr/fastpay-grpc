@@ -20,10 +20,10 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * SQLite-backed ledger (file or in-memory). {@code transaction_id} is the
- * idempotency key.
+ * SQLite-backed ledger (file or in-memory). Formerly {@code InMemoryLedger}.
+ * {@code transaction_id} is the idempotency key.
  */
-public final class InMemoryLedger implements AutoCloseable {
+public final class Ledger implements AutoCloseable {
     public static final long DEFAULT_OPENING_CENTS = 1_000_000L;
     public static final long POOR_OPENING_CENTS = 100L;
     public static final String DEFAULT_CURRENCY = "USD";
@@ -33,19 +33,19 @@ public final class InMemoryLedger implements AutoCloseable {
     private final Object lock = new Object();
     private final TokenStore tokens = new TokenStore();
 
-    public InMemoryLedger() {
+    public Ledger() {
         this(memoryUrl(), Auth.PAYMENTS_TOKEN, Auth.ADMIN_TOKEN);
     }
 
-    public InMemoryLedger(Path dbFile) {
+    public Ledger(Path dbFile) {
         this(dbFile, Auth.PAYMENTS_TOKEN, Auth.ADMIN_TOKEN);
     }
 
-    public InMemoryLedger(Path dbFile, String paymentsToken, String adminToken) {
+    public Ledger(Path dbFile, String paymentsToken, String adminToken) {
         this("jdbc:sqlite:" + dbFile.toAbsolutePath(), paymentsToken, adminToken);
     }
 
-    InMemoryLedger(String jdbcUrl, String paymentsToken, String adminToken) {
+    Ledger(String jdbcUrl, String paymentsToken, String adminToken) {
         try {
             this.conn = DriverManager.getConnection(jdbcUrl);
             try (Statement pragma = conn.createStatement()) {
@@ -71,8 +71,8 @@ public final class InMemoryLedger implements AutoCloseable {
         return tokens;
     }
 
-    public static InMemoryLedger file(Path dbFile) {
-        return new InMemoryLedger(dbFile);
+    public static Ledger file(Path dbFile) {
+        return new Ledger(dbFile);
     }
 
     private static String memoryUrl() {
