@@ -1,5 +1,6 @@
 package fastpay.security;
 
+import fastpay.metrics.FastPayMetrics;
 import io.grpc.ForwardingServerCallListener;
 import io.grpc.Metadata;
 import io.grpc.ServerCall;
@@ -21,16 +22,26 @@ public final class RateLimitInterceptor implements ServerInterceptor {
     private final double qps;
     private final double burst;
     private final LongSupplier nanoTime;
+    private final FastPayMetrics metrics;
     private final ConcurrentHashMap<String, Bucket> buckets = new ConcurrentHashMap<>();
 
     public RateLimitInterceptor(double qps, int burst) {
-        this(qps, burst, System::nanoTime);
+        this(qps, burst, System::nanoTime, FastPayMetrics.noop());
     }
 
     RateLimitInterceptor(double qps, int burst, LongSupplier nanoTime) {
+        this(qps, burst, nanoTime, FastPayMetrics.noop());
+    }
+
+    public RateLimitInterceptor(double qps, int burst, FastPayMetrics metrics) {
+        this(qps, burst, System::nanoTime, metrics);
+    }
+
+    RateLimitInterceptor(double qps, int burst, LongSupplier nanoTime, FastPayMetrics metrics) {
         this.qps = qps;
         this.burst = Math.max(1, burst);
         this.nanoTime = nanoTime;
+        this.metrics = metrics == null ? FastPayMetrics.noop() : metrics;
     }
 
     public boolean enabled() {
@@ -89,6 +100,7 @@ public final class RateLimitInterceptor implements ServerInterceptor {
     }
 
     private <ReqT, RespT> void reject(ServerCall<ReqT, RespT> call) {
+        metrics.recordRateLimitReject();
         Metadata trailers = new Metadata();
         trailers.put(RETRY_PUSHBACK_MS, String.valueOf(pushbackMillis()));
         call.close(Status.RESOURCE_EXHAUSTED.withDescription(

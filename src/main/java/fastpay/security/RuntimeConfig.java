@@ -11,10 +11,12 @@ public record RuntimeConfig(
         String paymentsToken,
         String adminToken,
         double rateLimitQps,
-        int rateLimitBurst
+        int rateLimitBurst,
+        int metricsPort
 ) {
     public static final double DEFAULT_RATE_LIMIT_QPS = 20.0;
     public static final int DEFAULT_RATE_LIMIT_BURST = 40;
+    public static final int DEFAULT_METRICS_PORT = 6566;
 
     public static RuntimeConfig fromEnv() {
         boolean tls = Boolean.parseBoolean(env("FASTPAY_TLS", "false"));
@@ -27,7 +29,8 @@ public record RuntimeConfig(
         return new RuntimeConfig(
                 tls, cert, key, trust, db, pay, admin,
                 envDouble("FASTPAY_RATE_LIMIT_QPS", DEFAULT_RATE_LIMIT_QPS),
-                envInt("FASTPAY_RATE_LIMIT_BURST", DEFAULT_RATE_LIMIT_BURST)
+                envInt("FASTPAY_RATE_LIMIT_BURST", DEFAULT_RATE_LIMIT_BURST),
+                envInt("FASTPAY_METRICS_PORT", DEFAULT_METRICS_PORT)
         );
     }
 
@@ -41,7 +44,8 @@ public record RuntimeConfig(
                 Auth.PAYMENTS_TOKEN,
                 Auth.ADMIN_TOKEN,
                 DEFAULT_RATE_LIMIT_QPS,
-                DEFAULT_RATE_LIMIT_BURST
+                DEFAULT_RATE_LIMIT_BURST,
+                0
         );
     }
 
@@ -51,12 +55,17 @@ public record RuntimeConfig(
 
     public RuntimeConfig withDb(Path db) {
         return new RuntimeConfig(
-                tls, cert, key, trustCert, db, paymentsToken, adminToken, rateLimitQps, rateLimitBurst);
+                tls, cert, key, trustCert, db, paymentsToken, adminToken, rateLimitQps, rateLimitBurst, metricsPort);
     }
 
     public RuntimeConfig withRateLimit(double qps, int burst) {
         return new RuntimeConfig(
-                tls, cert, key, trustCert, db, paymentsToken, adminToken, qps, burst);
+                tls, cert, key, trustCert, db, paymentsToken, adminToken, qps, burst, metricsPort);
+    }
+
+    public RuntimeConfig withMetricsPort(int metricsPort) {
+        return new RuntimeConfig(
+                tls, cert, key, trustCert, db, paymentsToken, adminToken, rateLimitQps, rateLimitBurst, metricsPort);
     }
 
     private static String env(String name, String fallback) {

@@ -2,6 +2,8 @@ package fastpay.server;
 
 import fastpay.fraud.FraudGuard;
 import fastpay.ledger.InMemoryLedger;
+import fastpay.metrics.FastPayMetrics;
+import fastpay.metrics.MetricsInterceptor;
 import fastpay.security.AuthInterceptor;
 import fastpay.security.RateLimitInterceptor;
 import fastpay.security.RuntimeConfig;
@@ -29,6 +31,7 @@ public class FastPayServer {
     private final Server server;
     private final InMemoryLedger ledger;
     private final HealthStatusManager health;
+    private final FastPayMetrics metrics;
     private final boolean closeLedger;
     private final AtomicBoolean stopped = new AtomicBoolean(false);
 
@@ -54,18 +57,20 @@ public class FastPayServer {
     ) throws IOException {
         this.ledger = ledger;
         this.closeLedger = closeLedger;
+        this.metrics = new FastPayMetrics();
         int threads = Math.max(4, Runtime.getRuntime().availableProcessors() * 2);
         this.workerPool = Executors.newScheduledThreadPool(threads);
         this.health = new HealthStatusManager();
         health.setStatus("", HealthCheckResponse.ServingStatus.SERVING);
         health.setStatus("fastpay.FastPay", HealthCheckResponse.ServingStatus.SERVING);
         NettyServerBuilder builder = NettyServerBuilder.forAddress(new InetSocketAddress("0.0.0.0", port))
-                .addService(new FastPayServiceImpl(workerPool, ledger, fraudGuard))
+                .addService(new FastPayServiceImpl(workerPool, ledger, fraudGuard, metrics))
                 .addService(health.getHealthService())
                 .addService(newReflectionService())
                 .intercept(new ValidationInterceptor())
-                .intercept(new RateLimitInterceptor(config.rateLimitQps(), config.rateLimitBurst()))
+                .intercept(new RateLimitInterceptor(config.rateLimitQps(), config.rateLimitBurst(), metrics))
                 .intercept(new AuthInterceptor(ledger.tokenStore()))
+                .intercept(new MetricsInterceptor(metrics))
                 .maxInboundMessageSize(16 * 1024 * 1024)
                 .keepAliveTime(30, TimeUnit.SECONDS)
                 .keepAliveTimeout(10, TimeUnit.SECONDS)
@@ -76,6 +81,9 @@ public class FastPayServer {
             builder.sslContext(Tls.serverContext(config.cert(), config.key()));
         }
         this.server = builder.build();
+        if (config.metricsPort() > 0) {
+            metrics.startHttp(config.metricsPort());
+        }
     }
 
     private static InMemoryLedger openLedger(RuntimeConfig config) throws IOException {
@@ -100,6 +108,14 @@ public class FastPayServer {
         return server.getPort();
     }
 
+    public FastPayMetrics metrics() {
+        return metrics;
+    }
+
+    public int metricsPort() {
+        return metrics.httpPort();
+    }
+
     public void stop() {
         if (!stopped.compareAndSet(false, true)) {
             return;
@@ -119,6 +135,7 @@ public class FastPayServer {
         if (closeLedger) {
             ledger.close();
         }
+        metrics.close();
     }
 
     public void awaitTermination() throws InterruptedException {
@@ -131,6 +148,7 @@ public class FastPayServer {
         server.start();
         System.out.println("tls=" + config.tls() + " db=" + config.db()
                 + " rate_limit=" + formatRateLimit(config)
+                + " metrics=" + formatMetrics(config)
                 + " roles=pay-token/admin-token (override FASTPAY_PAY_TOKEN / FASTPAY_ADMIN_TOKEN)");
         Runtime.getRuntime().addShutdownHook(new Thread(server::stop));
         server.awaitTermination();
@@ -141,5 +159,12 @@ public class FastPayServer {
             return "off";
         }
         return config.rateLimitQps() + "/s burst=" + config.rateLimitBurst();
+    }
+
+    private static String formatMetrics(RuntimeConfig config) {
+        if (config.metricsPort() <= 0) {
+            return "off";
+        }
+        return ":" + config.metricsPort() + "/metrics";
     }
 }
