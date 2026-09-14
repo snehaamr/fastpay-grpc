@@ -83,11 +83,13 @@ public class FastPayServer {
     }
 
     private static Ledger openLedger(RuntimeConfig config) throws IOException {
-        Path parent = config.db().getParent();
-        if (parent != null) {
-            Files.createDirectories(parent);
+        if (!config.postgres()) {
+            Path parent = config.db().getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
         }
-        return new Ledger(config.db(), config.paymentsToken(), config.adminToken());
+        return Ledger.open(config.resolvedJdbcUrl(), config.paymentsToken(), config.adminToken());
     }
 
     @SuppressWarnings("deprecation")
@@ -134,7 +136,7 @@ public class FastPayServer {
         RuntimeConfig config = RuntimeConfig.fromEnv();
         FastPayServer server = new FastPayServer(DEFAULT_PORT, config);
         server.start();
-        System.out.println("tls=" + config.tls() + " db=" + config.db()
+        System.out.println("tls=" + config.tls() + " db=" + formatDb(config)
                 + " webhook=" + formatWebhook(config)
                 + " rate_limit=" + formatRateLimit(config)
                 + " roles=pay-token/admin-token (override FASTPAY_PAY_TOKEN / FASTPAY_ADMIN_TOKEN)");
@@ -154,5 +156,12 @@ public class FastPayServer {
             return "off";
         }
         return config.webhookUrl();
+    }
+
+    private static String formatDb(RuntimeConfig config) {
+        if (config.postgres()) {
+            return "postgres";
+        }
+        return config.db().toString();
     }
 }

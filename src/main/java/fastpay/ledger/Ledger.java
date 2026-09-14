@@ -21,9 +21,10 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * SQLite-backed ledger (file or in-memory). Formerly {@code InMemoryLedger}.
- * {@code transaction_id} is the idempotency key. Settled, failed, and flagged
- * payments also write a transactional webhook outbox row.
+ * SQLite-backed ledger (file or in-memory) with optional Postgres via JDBC.
+ * Formerly {@code InMemoryLedger}. {@code transaction_id} is the idempotency
+ * key. Settled, failed, and flagged payments also write a transactional
+ * webhook outbox row.
  */
 public final class Ledger implements AutoCloseable {
     public static final long DEFAULT_OPENING_CENTS = 1_000_000L;
@@ -32,6 +33,7 @@ public final class Ledger implements AutoCloseable {
     public static final int MAX_MEMO_LENGTH = 280;
 
     private final Connection conn;
+    private final SqlDialect dialect;
     private final Object lock = new Object();
     private final TokenStore tokens = new TokenStore();
 
@@ -47,25 +49,18 @@ public final class Ledger implements AutoCloseable {
         this("jdbc:sqlite:" + dbFile.toAbsolutePath(), paymentsToken, adminToken);
     }
 
-    Ledger(String jdbcUrl, String paymentsToken, String adminToken) {
+    public Ledger(String jdbcUrl, String paymentsToken, String adminToken) {
         try {
+            this.dialect = SqlDialect.of(jdbcUrl);
             this.conn = DriverManager.getConnection(jdbcUrl);
-            try (Statement pragma = conn.createStatement()) {
-                pragma.execute("PRAGMA foreign_keys = ON");
-                pragma.execute("PRAGMA busy_timeout = 5000");
-            }
-            try (Statement pragma = conn.createStatement()) {
-                pragma.execute("PRAGMA journal_mode = WAL");
-            } catch (SQLException ignored) {
-                // in-memory databases may not support WAL
-            }
+            dialect.configure(conn);
             initSchema();
             migrateSchema();
             seedAccountsIfEmpty();
             seedApiKeys(paymentsToken, adminToken);
             loadApiKeys();
         } catch (SQLException e) {
-            throw new IllegalStateException("failed to open ledger database", e);
+            throw new IllegalStateException("failed to open ledger database: " + e.getMessage(), e);
         }
     }
 
@@ -75,6 +70,25 @@ public final class Ledger implements AutoCloseable {
 
     public static Ledger file(Path dbFile) {
         return new Ledger(dbFile);
+    }
+
+    public static Ledger open(String jdbcUrl, String paymentsToken, String adminToken) {
+        return new Ledger(jdbcUrl, paymentsToken, adminToken);
+    }
+
+    static void dropTables(String jdbcUrl) {
+        SqlDialect dialect = SqlDialect.of(jdbcUrl);
+        try (Connection conn = DriverManager.getConnection(jdbcUrl);
+             Statement statement = conn.createStatement()) {
+            String cascade = dialect.postgres() ? " CASCADE" : "";
+            statement.execute("DROP TABLE IF EXISTS webhook_outbox" + cascade);
+            statement.execute("DROP TABLE IF EXISTS journal" + cascade);
+            statement.execute("DROP TABLE IF EXISTS payments" + cascade);
+            statement.execute("DROP TABLE IF EXISTS api_keys" + cascade);
+            statement.execute("DROP TABLE IF EXISTS accounts" + cascade);
+        } catch (SQLException e) {
+            throw new IllegalStateException("failed to drop ledger tables: " + e.getMessage(), e);
+        }
     }
 
     private static String memoryUrl() {
@@ -87,7 +101,7 @@ public final class Ledger implements AutoCloseable {
                     CREATE TABLE IF NOT EXISTS accounts (
                       id TEXT PRIMARY KEY,
                       currency TEXT NOT NULL,
-                      balance_cents INTEGER NOT NULL
+                      balance_cents BIGINT NOT NULL
                     )
                     """);
             statement.execute("""
@@ -95,29 +109,30 @@ public final class Ledger implements AutoCloseable {
                       transaction_id TEXT PRIMARY KEY,
                       account_from TEXT NOT NULL,
                       account_to TEXT NOT NULL,
-                      amount_cents INTEGER NOT NULL,
+                      amount_cents BIGINT NOT NULL,
                       currency TEXT NOT NULL,
                       success INTEGER NOT NULL,
                       message TEXT NOT NULL,
                       status TEXT NOT NULL,
-                      created_at INTEGER NOT NULL,
+                      created_at BIGINT NOT NULL,
                       refund_of TEXT,
                       memo TEXT
                     )
                     """);
             statement.execute("""
                     CREATE TABLE IF NOT EXISTS journal (
-                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      %s,
                       transaction_id TEXT NOT NULL,
                       account_id TEXT NOT NULL,
-                      delta_cents INTEGER NOT NULL,
+                      delta_cents BIGINT NOT NULL,
                       currency TEXT NOT NULL
                     )
-                    """);
+                    """.formatted(dialect.autoIdColumn()));
+            // "role" is quoted: ROLE is reserved in Postgres.
             statement.execute("""
                     CREATE TABLE IF NOT EXISTS api_keys (
                       token_hash TEXT PRIMARY KEY,
-                      role TEXT NOT NULL,
+                      "role" TEXT NOT NULL,
                       label TEXT NOT NULL
                     )
                     """);
@@ -127,29 +142,29 @@ public final class Ledger implements AutoCloseable {
             statement.execute("CREATE UNIQUE INDEX IF NOT EXISTS api_keys_label ON api_keys(label)");
             statement.execute("""
                     CREATE TABLE IF NOT EXISTS webhook_outbox (
-                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      %s,
                       transaction_id TEXT NOT NULL,
                       event_type TEXT NOT NULL,
                       payload TEXT NOT NULL,
                       status TEXT NOT NULL,
                       attempts INTEGER NOT NULL,
-                      next_attempt_at INTEGER NOT NULL,
+                      next_attempt_at BIGINT NOT NULL,
                       last_error TEXT,
-                      created_at INTEGER NOT NULL,
+                      created_at BIGINT NOT NULL,
                       UNIQUE (transaction_id, event_type)
                     )
-                    """);
+                    """.formatted(dialect.autoIdColumn()));
             statement.execute("CREATE INDEX IF NOT EXISTS outbox_pending ON webhook_outbox(status, next_attempt_at)");
         }
     }
 
     private void migrateSchema() throws SQLException {
-        if (!hasColumn("payments", "refund_of")) {
+        if (!dialect.hasColumn(conn, "payments", "refund_of")) {
             try (Statement statement = conn.createStatement()) {
                 statement.execute("ALTER TABLE payments ADD COLUMN refund_of TEXT");
             }
         }
-        if (!hasColumn("payments", "memo")) {
+        if (!dialect.hasColumn(conn, "payments", "memo")) {
             try (Statement statement = conn.createStatement()) {
                 statement.execute("ALTER TABLE payments ADD COLUMN memo TEXT");
             }
@@ -159,18 +174,13 @@ public final class Ledger implements AutoCloseable {
             statement.execute("CREATE UNIQUE INDEX IF NOT EXISTS api_keys_label ON api_keys(label)");
             statement.execute("CREATE INDEX IF NOT EXISTS outbox_pending ON webhook_outbox(status, next_attempt_at)");
         }
-    }
-
-    private boolean hasColumn(String table, String column) throws SQLException {
-        try (Statement statement = conn.createStatement();
-             ResultSet rs = statement.executeQuery("PRAGMA table_info(" + table + ")")) {
-            while (rs.next()) {
-                if (column.equalsIgnoreCase(rs.getString("name"))) {
-                    return true;
-                }
-            }
-        }
-        return false;
+        // SQLite INTEGER is 64-bit; Postgres INTEGER is 32-bit and cannot store epoch millis.
+        dialect.widenInt64(conn, "accounts", "balance_cents");
+        dialect.widenInt64(conn, "payments", "amount_cents");
+        dialect.widenInt64(conn, "payments", "created_at");
+        dialect.widenInt64(conn, "journal", "delta_cents");
+        dialect.widenInt64(conn, "webhook_outbox", "next_attempt_at");
+        dialect.widenInt64(conn, "webhook_outbox", "created_at");
     }
 
     private void seedAccountsIfEmpty() throws SQLException {
@@ -203,7 +213,7 @@ public final class Ledger implements AutoCloseable {
             return;
         }
         try (PreparedStatement ps = conn.prepareStatement(
-                "INSERT INTO api_keys(token_hash, role, label) VALUES (?, ?, ?)")) {
+                "INSERT INTO api_keys(token_hash, \"role\", label) VALUES (?, ?, ?)")) {
             ps.setString(1, TokenStore.sha256(rawToken));
             ps.setString(2, role.name());
             ps.setString(3, label);
@@ -222,7 +232,7 @@ public final class Ledger implements AutoCloseable {
             try {
                 insertApiKey(token, role, resolved);
             } catch (SQLException e) {
-                if (String.valueOf(e.getMessage()).contains("UNIQUE")) {
+                if (dialect.uniqueViolation(e)) {
                     throw new InvalidTransactionException("api key already exists: " + resolved);
                 }
                 throw new IllegalStateException(e);
@@ -240,7 +250,7 @@ public final class Ledger implements AutoCloseable {
                 if (!blank(rawToken)) {
                     hash = TokenStore.sha256(rawToken);
                     try (PreparedStatement ps = conn.prepareStatement(
-                            "SELECT token_hash, role, label FROM api_keys WHERE token_hash = ?")) {
+                            "SELECT token_hash, \"role\", label FROM api_keys WHERE token_hash = ?")) {
                         ps.setString(1, hash);
                         try (ResultSet rs = ps.executeQuery()) {
                             if (!rs.next()) {
@@ -252,7 +262,7 @@ public final class Ledger implements AutoCloseable {
                     }
                 } else if (!blank(label)) {
                     try (PreparedStatement ps = conn.prepareStatement(
-                            "SELECT token_hash, role, label FROM api_keys WHERE label = ?")) {
+                            "SELECT token_hash, \"role\", label FROM api_keys WHERE label = ?")) {
                         ps.setString(1, normalizeLabel(label));
                         try (ResultSet rs = ps.executeQuery()) {
                             if (!rs.next()) {
@@ -287,7 +297,7 @@ public final class Ledger implements AutoCloseable {
     private int countAdminKeys() throws SQLException {
         try (Statement statement = conn.createStatement();
              ResultSet rs = statement.executeQuery(
-                     "SELECT COUNT(*) FROM api_keys WHERE role = 'ADMIN'")) {
+                     "SELECT COUNT(*) FROM api_keys WHERE \"role\" = 'ADMIN'")) {
             return rs.next() ? rs.getInt(1) : 0;
         }
     }
@@ -311,7 +321,7 @@ public final class Ledger implements AutoCloseable {
 
     private void loadApiKeys() throws SQLException {
         try (Statement statement = conn.createStatement();
-             ResultSet rs = statement.executeQuery("SELECT token_hash, role FROM api_keys")) {
+             ResultSet rs = statement.executeQuery("SELECT token_hash, \"role\" FROM api_keys")) {
             while (rs.next()) {
                 tokens.putHash(rs.getString(1), Role.valueOf(rs.getString(2)));
             }
@@ -350,7 +360,7 @@ public final class Ledger implements AutoCloseable {
                     ps.executeUpdate();
                 }
             } catch (SQLException e) {
-                if (String.valueOf(e.getMessage()).contains("UNIQUE")) {
+                if (dialect.uniqueViolation(e)) {
                     throw new InvalidTransactionException("account already exists: " + accountId);
                 }
                 throw new IllegalStateException(e);
@@ -827,7 +837,7 @@ public final class Ledger implements AutoCloseable {
             ps.setLong(6, now);
             ps.executeUpdate();
         } catch (SQLException e) {
-            if (String.valueOf(e.getMessage()).toUpperCase(Locale.US).contains("UNIQUE")) {
+            if (dialect.uniqueViolation(e)) {
                 return;
             }
             throw e;
