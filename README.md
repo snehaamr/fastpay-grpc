@@ -41,10 +41,16 @@ payments cannot be refunded. A refund cannot be refunded.
 GetPayment / ListTransactions – inspect a payment or recent history (newest first),
 including `created_at_millis` and `refund_of`
 
+ListAccounts – paginated directory of accounts (id order)
+
 ListJournal – ADMIN-only double-entry audit trail (signed `delta_cents`)
 
+Pagination – `ListAccounts`, `ListTransactions`, and `ListJournal` take
+`page_token` and return `next_page_token` (opaque keyset cursor). Empty
+`next_page_token` means the last page. Invalid tokens are `INVALID_ARGUMENT`.
+
 Auth – hashed API keys in SQLite with two roles:
-- `pay-token` (PAYMENTS): transfers, refunds, status, GetAccount, OpenAccount, list one account
+- `pay-token` (PAYMENTS): transfers, refunds, status, GetAccount, OpenAccount, ListAccounts, list one account
 - `admin-token` (ADMIN): also list all payments and the journal
 Override with `FASTPAY_PAY_TOKEN` / `FASTPAY_ADMIN_TOKEN`
 

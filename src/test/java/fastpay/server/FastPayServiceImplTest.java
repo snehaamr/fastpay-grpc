@@ -5,6 +5,8 @@ import fastpay.ledger.InMemoryLedger;
 import fastpay.proto.AccountQuery;
 import fastpay.proto.AccountView;
 import fastpay.proto.FastPayGrpc;
+import fastpay.proto.ListAccountsQuery;
+import fastpay.proto.ListAccountsView;
 import fastpay.proto.ListJournalQuery;
 import fastpay.proto.ListJournalView;
 import fastpay.proto.ListTransactionsQuery;
@@ -377,6 +379,85 @@ class FastPayServiceImplTest {
         stub.processTransaction(request("txn-admin-list", "ACC-111", "ACC-222", 100));
         ListTransactionsView view = admin.listTransactions(ListTransactionsQuery.newBuilder().setLimit(50).build());
         assertTrue(view.getPaymentsCount() >= 1);
+    }
+
+    @Test
+    void listAccountsPagesById() {
+        ListAccountsView first = stub.listAccounts(ListAccountsQuery.newBuilder().setLimit(2).build());
+        assertEquals(2, first.getAccountsCount());
+        assertEquals("ACC-111", first.getAccounts(0).getAccountId());
+        assertEquals("ACC-222", first.getAccounts(1).getAccountId());
+        assertFalse(first.getNextPageToken().isBlank());
+
+        ListAccountsView second = stub.listAccounts(ListAccountsQuery.newBuilder()
+                .setLimit(2)
+                .setPageToken(first.getNextPageToken())
+                .build());
+        assertEquals(2, second.getAccountsCount());
+        assertEquals("ACC-AAA", second.getAccounts(0).getAccountId());
+        assertEquals("ACC-BBB", second.getAccounts(1).getAccountId());
+
+        ListAccountsView third = stub.listAccounts(ListAccountsQuery.newBuilder()
+                .setLimit(2)
+                .setPageToken(second.getNextPageToken())
+                .build());
+        assertEquals(1, third.getAccountsCount());
+        assertEquals("ACC-POOR", third.getAccounts(0).getAccountId());
+        assertTrue(third.getNextPageToken().isBlank());
+    }
+
+    @Test
+    void listTransactionsPagesNewestFirst() {
+        stub.processTransaction(request("txn-page-a", "ACC-111", "ACC-222", 100));
+        stub.processTransaction(request("txn-page-b", "ACC-111", "ACC-222", 200));
+        stub.processTransaction(request("txn-page-c", "ACC-111", "ACC-222", 300));
+
+        ListTransactionsView first = stub.listTransactions(ListTransactionsQuery.newBuilder()
+                .setAccountId("ACC-111")
+                .setLimit(2)
+                .build());
+        assertEquals(2, first.getPaymentsCount());
+        assertEquals("txn-page-c", first.getPayments(0).getTransactionId());
+        assertEquals("txn-page-b", first.getPayments(1).getTransactionId());
+        assertFalse(first.getNextPageToken().isBlank());
+
+        ListTransactionsView second = stub.listTransactions(ListTransactionsQuery.newBuilder()
+                .setAccountId("ACC-111")
+                .setLimit(2)
+                .setPageToken(first.getNextPageToken())
+                .build());
+        assertEquals(1, second.getPaymentsCount());
+        assertEquals("txn-page-a", second.getPayments(0).getTransactionId());
+        assertTrue(second.getNextPageToken().isBlank());
+    }
+
+    @Test
+    void listJournalPagesAndRejectsInvalidToken() {
+        FastPayGrpc.FastPayBlockingStub admin = stubFor(Auth.ADMIN_TOKEN);
+        stub.processTransaction(request("txn-j-a", "ACC-111", "ACC-222", 100));
+        stub.processTransaction(request("txn-j-b", "ACC-111", "ACC-222", 200));
+
+        var first = admin.listJournal(ListJournalQuery.newBuilder()
+                .setAccountId("ACC-111")
+                .setLimit(2)
+                .build());
+        assertEquals(2, first.getEntriesCount());
+        assertFalse(first.getNextPageToken().isBlank());
+
+        var second = admin.listJournal(ListJournalQuery.newBuilder()
+                .setAccountId("ACC-111")
+                .setLimit(2)
+                .setPageToken(first.getNextPageToken())
+                .build());
+        assertTrue(second.getEntriesCount() >= 1);
+
+        StatusRuntimeException ex = assertThrows(
+                StatusRuntimeException.class,
+                () -> stub.listAccounts(ListAccountsQuery.newBuilder()
+                        .setPageToken("not-a-token")
+                        .build())
+        );
+        assertEquals(Status.Code.INVALID_ARGUMENT, ex.getStatus().getCode());
     }
 
     @Test
