@@ -73,4 +73,17 @@ final class SqlDialect {
         }
         return false;
     }
+
+    /**
+     * Postgres INTEGER is 32-bit (epoch millis overflow). SQLite INTEGER is already
+     * 64-bit, so this is a no-op there.
+     */
+    void widenInt64(Connection conn, String table, String column) throws SQLException {
+        if (!postgres) {
+            return;
+        }
+        try (Statement statement = conn.createStatement()) {
+            statement.execute("ALTER TABLE " + table + " ALTER COLUMN " + column + " TYPE BIGINT");
+        }
+    }
 }

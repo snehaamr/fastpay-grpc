@@ -101,7 +101,7 @@ public final class Ledger implements AutoCloseable {
                     CREATE TABLE IF NOT EXISTS accounts (
                       id TEXT PRIMARY KEY,
                       currency TEXT NOT NULL,
-                      balance_cents INTEGER NOT NULL
+                      balance_cents BIGINT NOT NULL
                     )
                     """);
             statement.execute("""
@@ -109,12 +109,12 @@ public final class Ledger implements AutoCloseable {
                       transaction_id TEXT PRIMARY KEY,
                       account_from TEXT NOT NULL,
                       account_to TEXT NOT NULL,
-                      amount_cents INTEGER NOT NULL,
+                      amount_cents BIGINT NOT NULL,
                       currency TEXT NOT NULL,
                       success INTEGER NOT NULL,
                       message TEXT NOT NULL,
                       status TEXT NOT NULL,
-                      created_at INTEGER NOT NULL,
+                      created_at BIGINT NOT NULL,
                       refund_of TEXT,
                       memo TEXT
                     )
@@ -124,7 +124,7 @@ public final class Ledger implements AutoCloseable {
                       %s,
                       transaction_id TEXT NOT NULL,
                       account_id TEXT NOT NULL,
-                      delta_cents INTEGER NOT NULL,
+                      delta_cents BIGINT NOT NULL,
                       currency TEXT NOT NULL
                     )
                     """.formatted(dialect.autoIdColumn()));
@@ -148,9 +148,9 @@ public final class Ledger implements AutoCloseable {
                       payload TEXT NOT NULL,
                       status TEXT NOT NULL,
                       attempts INTEGER NOT NULL,
-                      next_attempt_at INTEGER NOT NULL,
+                      next_attempt_at BIGINT NOT NULL,
                       last_error TEXT,
-                      created_at INTEGER NOT NULL,
+                      created_at BIGINT NOT NULL,
                       UNIQUE (transaction_id, event_type)
                     )
                     """.formatted(dialect.autoIdColumn()));
@@ -174,6 +174,13 @@ public final class Ledger implements AutoCloseable {
             statement.execute("CREATE UNIQUE INDEX IF NOT EXISTS api_keys_label ON api_keys(label)");
             statement.execute("CREATE INDEX IF NOT EXISTS outbox_pending ON webhook_outbox(status, next_attempt_at)");
         }
+        // SQLite INTEGER is 64-bit; Postgres INTEGER is 32-bit and cannot store epoch millis.
+        dialect.widenInt64(conn, "accounts", "balance_cents");
+        dialect.widenInt64(conn, "payments", "amount_cents");
+        dialect.widenInt64(conn, "payments", "created_at");
+        dialect.widenInt64(conn, "journal", "delta_cents");
+        dialect.widenInt64(conn, "webhook_outbox", "next_attempt_at");
+        dialect.widenInt64(conn, "webhook_outbox", "created_at");
     }
 
     private void seedAccountsIfEmpty() throws SQLException {

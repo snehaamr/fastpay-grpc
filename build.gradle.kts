@@ -80,6 +80,12 @@ tasks.withType<JavaCompile>().configureEach {
 
 tasks.test {
     useJUnitPlatform()
+    testLogging {
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        events("failed")
+        showCauses = true
+        showStackTraces = true
+    }
 }
 
 fun JavaExec.allowDeprecatedUnsafeOnNewJdks() {
