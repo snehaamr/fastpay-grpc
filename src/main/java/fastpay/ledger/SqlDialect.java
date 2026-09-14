@@ -50,7 +50,12 @@ final class SqlDialect {
     boolean hasColumn(Connection conn, String table, String column) throws SQLException {
         if (postgres) {
             try (PreparedStatement ps = conn.prepareStatement(
-                    "SELECT 1 FROM information_schema.columns WHERE table_name = ? AND column_name = ?")) {
+                    """
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND table_name = ?
+                      AND column_name = ?
+                    """)) {
                 ps.setString(1, table.toLowerCase(Locale.US));
                 ps.setString(2, column.toLowerCase(Locale.US));
                 try (ResultSet rs = ps.executeQuery()) {

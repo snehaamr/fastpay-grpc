@@ -60,7 +60,7 @@ public final class Ledger implements AutoCloseable {
             seedApiKeys(paymentsToken, adminToken);
             loadApiKeys();
         } catch (SQLException e) {
-            throw new IllegalStateException("failed to open ledger database", e);
+            throw new IllegalStateException("failed to open ledger database: " + e.getMessage(), e);
         }
     }
 
@@ -87,7 +87,7 @@ public final class Ledger implements AutoCloseable {
             statement.execute("DROP TABLE IF EXISTS api_keys" + cascade);
             statement.execute("DROP TABLE IF EXISTS accounts" + cascade);
         } catch (SQLException e) {
-            throw new IllegalStateException("failed to drop ledger tables", e);
+            throw new IllegalStateException("failed to drop ledger tables: " + e.getMessage(), e);
         }
     }
 
@@ -128,10 +128,11 @@ public final class Ledger implements AutoCloseable {
                       currency TEXT NOT NULL
                     )
                     """.formatted(dialect.autoIdColumn()));
+            // "role" is quoted: ROLE is reserved in Postgres.
             statement.execute("""
                     CREATE TABLE IF NOT EXISTS api_keys (
                       token_hash TEXT PRIMARY KEY,
-                      role TEXT NOT NULL,
+                      "role" TEXT NOT NULL,
                       label TEXT NOT NULL
                     )
                     """);
@@ -205,7 +206,7 @@ public final class Ledger implements AutoCloseable {
             return;
         }
         try (PreparedStatement ps = conn.prepareStatement(
-                "INSERT INTO api_keys(token_hash, role, label) VALUES (?, ?, ?)")) {
+                "INSERT INTO api_keys(token_hash, \"role\", label) VALUES (?, ?, ?)")) {
             ps.setString(1, TokenStore.sha256(rawToken));
             ps.setString(2, role.name());
             ps.setString(3, label);
@@ -242,7 +243,7 @@ public final class Ledger implements AutoCloseable {
                 if (!blank(rawToken)) {
                     hash = TokenStore.sha256(rawToken);
                     try (PreparedStatement ps = conn.prepareStatement(
-                            "SELECT token_hash, role, label FROM api_keys WHERE token_hash = ?")) {
+                            "SELECT token_hash, \"role\", label FROM api_keys WHERE token_hash = ?")) {
                         ps.setString(1, hash);
                         try (ResultSet rs = ps.executeQuery()) {
                             if (!rs.next()) {
@@ -254,7 +255,7 @@ public final class Ledger implements AutoCloseable {
                     }
                 } else if (!blank(label)) {
                     try (PreparedStatement ps = conn.prepareStatement(
-                            "SELECT token_hash, role, label FROM api_keys WHERE label = ?")) {
+                            "SELECT token_hash, \"role\", label FROM api_keys WHERE label = ?")) {
                         ps.setString(1, normalizeLabel(label));
                         try (ResultSet rs = ps.executeQuery()) {
                             if (!rs.next()) {
@@ -289,7 +290,7 @@ public final class Ledger implements AutoCloseable {
     private int countAdminKeys() throws SQLException {
         try (Statement statement = conn.createStatement();
              ResultSet rs = statement.executeQuery(
-                     "SELECT COUNT(*) FROM api_keys WHERE role = 'ADMIN'")) {
+                     "SELECT COUNT(*) FROM api_keys WHERE \"role\" = 'ADMIN'")) {
             return rs.next() ? rs.getInt(1) : 0;
         }
     }
@@ -313,7 +314,7 @@ public final class Ledger implements AutoCloseable {
 
     private void loadApiKeys() throws SQLException {
         try (Statement statement = conn.createStatement();
-             ResultSet rs = statement.executeQuery("SELECT token_hash, role FROM api_keys")) {
+             ResultSet rs = statement.executeQuery("SELECT token_hash, \"role\" FROM api_keys")) {
             while (rs.next()) {
                 tokens.putHash(rs.getString(1), Role.valueOf(rs.getString(2)));
             }

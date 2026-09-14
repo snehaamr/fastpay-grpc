@@ -15,7 +15,7 @@ services:
 
   fastpay:
     environment:
-      FASTPAY_JDBC_URL: jdbc:postgresql://postgres:5432/fastpay?user=fastpay&password=fastpay
+      FASTPAY_JDBC_URL: jdbc:postgresql://postgres:5432/fastpay?user=fastpay&password=fastpay&sslmode=disable
     depends_on:
       postgres:
         condition: service_healthy

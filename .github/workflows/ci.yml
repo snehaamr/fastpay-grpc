@@ -31,5 +31,5 @@ jobs:
           java-version: "21"
       - name: Test
         env:
-          FASTPAY_TEST_JDBC_URL: jdbc:postgresql://127.0.0.1:5432/fastpay?user=fastpay&password=fastpay
+          FASTPAY_TEST_JDBC_URL: jdbc:postgresql://127.0.0.1:5432/fastpay?user=fastpay&password=fastpay&sslmode=disable
         run: chmod +x gradlew && ./gradlew test --no-daemon
