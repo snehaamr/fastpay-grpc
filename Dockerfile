@@ -22,6 +22,7 @@ ENV FASTPAY_KEY=/opt/fastpay/certs/server.key
 ENV FASTPAY_TRUST_CERT=/opt/fastpay/certs/ca.crt
 ENV FASTPAY_DB=/data/fastpay.db
 ENV FASTPAY_TLS=false
+ENV FASTPAY_METRICS_PORT=6566
 VOLUME ["/data"]
-EXPOSE 6565
+EXPOSE 6565 6566
 ENTRYPOINT ["/opt/fastpay/docker-entrypoint.sh"]

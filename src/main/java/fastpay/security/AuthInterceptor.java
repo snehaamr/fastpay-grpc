@@ -41,7 +41,7 @@ public final class AuthInterceptor implements ServerInterceptor {
                 });
     }
 
-    static boolean isPublicService(String serviceName) {
+    public static boolean isPublicService(String serviceName) {
         return "grpc.health.v1.Health".equals(serviceName)
                 || "grpc.reflection.v1alpha.ServerReflection".equals(serviceName)
                 || "grpc.reflection.v1.ServerReflection".equals(serviceName);

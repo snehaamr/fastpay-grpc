@@ -35,6 +35,9 @@ dependencies {
     implementation("org.slf4j:slf4j-api:2.0.16")
     runtimeOnly("org.slf4j:slf4j-simple:2.0.16")
 
+    implementation("io.prometheus:prometheus-metrics-core:1.3.6")
+    implementation("io.prometheus:prometheus-metrics-exporter-httpserver:1.3.6")
+
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.3")
     testImplementation("io.grpc:grpc-inprocess:${grpcVersion}")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")

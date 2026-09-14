@@ -69,6 +69,21 @@ each message. Health and reflection are unlimited. Returns `RESOURCE_EXHAUSTED`
 with `grpc-retry-pushback-ms`. Override with `FASTPAY_RATE_LIMIT_QPS` /
 `FASTPAY_RATE_LIMIT_BURST` (`0` disables the limiter).
 
+Prometheus – HTTP scrape on `:6566/metrics` (`FASTPAY_METRICS_PORT`, `0` disables).
+Counters and a ledger histogram cover QPS, latency, fraud flags, and rate-limit
+rejects:
+
+```text
+rate(fastpay_rpc_requests_total[1m])
+histogram_quantile(0.99, rate(fastpay_ledger_duration_seconds_bucket[5m]))
+rate(fastpay_fraud_flags_total[5m])
+rate(fastpay_rate_limit_rejects_total[5m])
+```
+
+```bash
+curl -s localhost:6566/metrics | grep fastpay_
+```
+
 TLS – private keys are **not** committed. `FASTPAY_TLS=true` generates localhost
 certs via openssl if `certs/server.key` is missing (`scripts/gen-certs.sh`).
 
@@ -130,7 +145,7 @@ Or without Compose:
 
 ```bash
 docker build -t fastpay .
-docker run -d --name fastpay-grpc -p 6565:6565 -v fastpay-data:/data fastpay
+docker run -d --name fastpay-grpc -p 6565:6565 -p 6566:6566 -v fastpay-data:/data fastpay
 docker logs -f fastpay-grpc    # should print "FastPay gRPC server started on port 6565"
 docker stop fastpay-grpc && docker rm fastpay-grpc
 ```
@@ -138,7 +153,7 @@ docker stop fastpay-grpc && docker rm fastpay-grpc
 TLS in the container:
 
 ```bash
-docker run -d --name fastpay-grpc -p 6565:6565 -e FASTPAY_TLS=true fastpay
+docker run -d --name fastpay-grpc -p 6565:6565 -p 6566:6566 -e FASTPAY_TLS=true fastpay
 ```
 
 Default payments token is `pay-token` (admin is `admin-token`). ghz must send it.

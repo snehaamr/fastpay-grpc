@@ -31,6 +31,7 @@ import fastpay.proto.RevokeApiKeyView;
 import fastpay.proto.TransactionQuery;
 import fastpay.proto.TransactionRequest;
 import fastpay.proto.TransactionResponse;
+import fastpay.metrics.FastPayMetrics;
 import fastpay.security.AuthContext;
 import fastpay.security.Role;
 import io.grpc.Context;
@@ -49,6 +50,7 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
     private final ScheduledExecutorService workerPool;
     private final InMemoryLedger ledger;
     private final FraudGuard fraudGuard;
+    private final FastPayMetrics metrics;
 
     public FastPayServiceImpl(ScheduledExecutorService workerPool) {
         this(workerPool, new InMemoryLedger(), new FraudGuard());
@@ -59,9 +61,19 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
     }
 
     public FastPayServiceImpl(ScheduledExecutorService workerPool, InMemoryLedger ledger, FraudGuard fraudGuard) {
+        this(workerPool, ledger, fraudGuard, FastPayMetrics.noop());
+    }
+
+    public FastPayServiceImpl(
+            ScheduledExecutorService workerPool,
+            InMemoryLedger ledger,
+            FraudGuard fraudGuard,
+            FastPayMetrics metrics
+    ) {
         this.workerPool = workerPool;
         this.ledger = ledger;
         this.fraudGuard = fraudGuard;
+        this.metrics = metrics == null ? FastPayMetrics.noop() : metrics;
     }
 
     private long nowNanos() {
@@ -78,7 +90,7 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
                     respObs.onError(Status.CANCELLED.withDescription("client cancelled").asRuntimeException());
                     return;
                 }
-                SubmitResult result = ledger.submit(req);
+                SubmitResult result = metrics.timeLedger(() -> ledger.submit(req));
                 complete(respObs, toResponse(result, start));
             } catch (InvalidTransactionException e) {
                 respObs.onError(invalidStatus(e).asRuntimeException());
@@ -101,7 +113,7 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
             @Override
             public void onNext(TransactionRequest req) {
                 try {
-                    SubmitResult result = ledger.submit(req);
+                    SubmitResult result = metrics.timeLedger(() -> ledger.submit(req));
                     if (result.replayed()) {
                         replayed.incrementAndGet();
                     } else if (result.transaction().success()) {
@@ -192,9 +204,10 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
                     var fraud = fraudGuard.evaluate(req);
                     SubmitResult result;
                     if (fraud.isPresent()) {
-                        result = ledger.reject(req, PaymentStatus.FLAGGED, fraud.get());
+                        metrics.recordFraud(FastPayMetrics.fraudReason(fraud.get()));
+                        result = metrics.timeLedger(() -> ledger.reject(req, PaymentStatus.FLAGGED, fraud.get()));
                     } else {
-                        result = ledger.submit(req);
+                        result = metrics.timeLedger(() -> ledger.submit(req));
                         if (!result.replayed() && result.transaction().success()) {
                             fraudGuard.recordLivePayment(req.getAccountFrom());
                         }
@@ -345,7 +358,8 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
         Context context = Context.current();
         workerPool.execute(context.wrap(() -> {
             try {
-                SubmitResult result = ledger.refund(req.getTransactionId(), req.getRefundId());
+                SubmitResult result = metrics.timeLedger(
+                        () -> ledger.refund(req.getTransactionId(), req.getRefundId()));
                 complete(respObs, toResponse(result, start));
             } catch (InvalidTransactionException e) {
                 respObs.onError(invalidStatus(e).asRuntimeException());
