@@ -122,17 +122,9 @@ class FastPayServerTest {
         Path ca = dir.resolve("ca.crt");
         Path db = dir.resolve("fastpay.db");
         Tls.ensureLocalhostCerts(cert, key, ca);
-        RuntimeConfig tls = new RuntimeConfig(
-                true,
-                cert,
-                key,
-                ca,
-                db,
-                Auth.PAYMENTS_TOKEN,
-                Auth.ADMIN_TOKEN,
-                RuntimeConfig.DEFAULT_RATE_LIMIT_QPS,
-                RuntimeConfig.DEFAULT_RATE_LIMIT_BURST
-        );
+        RuntimeConfig tls = RuntimeConfig.plaintext()
+                .withDb(db)
+                .withTls(true, cert, key, ca);
         FastPayServer server = new FastPayServer(0, tls);
         server.start();
         FastPayClient client = new FastPayClient("localhost", server.getPort(), tls);

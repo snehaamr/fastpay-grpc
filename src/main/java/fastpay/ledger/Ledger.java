@@ -5,6 +5,7 @@ import fastpay.proto.TransactionRequest;
 import fastpay.security.Auth;
 import fastpay.security.Role;
 import fastpay.security.TokenStore;
+import fastpay.webhook.PaymentEvents;
 
 import java.nio.file.Path;
 import java.sql.Connection;
@@ -20,43 +21,38 @@ import java.util.Optional;
 import java.util.UUID;
 
 /**
- * SQLite-backed ledger (file or in-memory). {@code transaction_id} is the
- * idempotency key.
+ * JDBC ledger (SQLite for the demo, Postgres for HA). {@code transaction_id}
+ * is the idempotency key. Payment settle / fail / flag rows are written to a
+ * transactional webhook outbox in the same commit.
  */
-public final class InMemoryLedger implements AutoCloseable {
+public final class Ledger implements AutoCloseable {
     public static final long DEFAULT_OPENING_CENTS = 1_000_000L;
     public static final long POOR_OPENING_CENTS = 100L;
     public static final String DEFAULT_CURRENCY = "USD";
     public static final int MAX_MEMO_LENGTH = 280;
 
     private final Connection conn;
+    private final SqlDialect dialect;
     private final Object lock = new Object();
     private final TokenStore tokens = new TokenStore();
 
-    public InMemoryLedger() {
+    public Ledger() {
         this(memoryUrl(), Auth.PAYMENTS_TOKEN, Auth.ADMIN_TOKEN);
     }
 
-    public InMemoryLedger(Path dbFile) {
+    public Ledger(Path dbFile) {
         this(dbFile, Auth.PAYMENTS_TOKEN, Auth.ADMIN_TOKEN);
     }
 
-    public InMemoryLedger(Path dbFile, String paymentsToken, String adminToken) {
+    public Ledger(Path dbFile, String paymentsToken, String adminToken) {
         this("jdbc:sqlite:" + dbFile.toAbsolutePath(), paymentsToken, adminToken);
     }
 
-    InMemoryLedger(String jdbcUrl, String paymentsToken, String adminToken) {
+    public Ledger(String jdbcUrl, String paymentsToken, String adminToken) {
         try {
+            this.dialect = SqlDialect.of(jdbcUrl);
             this.conn = DriverManager.getConnection(jdbcUrl);
-            try (Statement pragma = conn.createStatement()) {
-                pragma.execute("PRAGMA foreign_keys = ON");
-                pragma.execute("PRAGMA busy_timeout = 5000");
-            }
-            try (Statement pragma = conn.createStatement()) {
-                pragma.execute("PRAGMA journal_mode = WAL");
-            } catch (SQLException ignored) {
-                // in-memory databases may not support WAL
-            }
+            dialect.configure(conn);
             initSchema();
             migrateSchema();
             seedAccountsIfEmpty();
@@ -71,8 +67,27 @@ public final class InMemoryLedger implements AutoCloseable {
         return tokens;
     }
 
-    public static InMemoryLedger file(Path dbFile) {
-        return new InMemoryLedger(dbFile);
+    public static Ledger file(Path dbFile) {
+        return new Ledger(dbFile);
+    }
+
+    public static Ledger open(String jdbcUrl, String paymentsToken, String adminToken) {
+        return new Ledger(jdbcUrl, paymentsToken, adminToken);
+    }
+
+    static void dropTables(String jdbcUrl) {
+        SqlDialect dialect = SqlDialect.of(jdbcUrl);
+        try (Connection conn = DriverManager.getConnection(jdbcUrl);
+             Statement statement = conn.createStatement()) {
+            String cascade = dialect.postgres() ? " CASCADE" : "";
+            statement.execute("DROP TABLE IF EXISTS webhook_outbox" + cascade);
+            statement.execute("DROP TABLE IF EXISTS journal" + cascade);
+            statement.execute("DROP TABLE IF EXISTS payments" + cascade);
+            statement.execute("DROP TABLE IF EXISTS api_keys" + cascade);
+            statement.execute("DROP TABLE IF EXISTS accounts" + cascade);
+        } catch (SQLException e) {
+            throw new IllegalStateException("failed to drop ledger tables", e);
+        }
     }
 
     private static String memoryUrl() {
@@ -105,13 +120,13 @@ public final class InMemoryLedger implements AutoCloseable {
                     """);
             statement.execute("""
                     CREATE TABLE IF NOT EXISTS journal (
-                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      %s,
                       transaction_id TEXT NOT NULL,
                       account_id TEXT NOT NULL,
                       delta_cents INTEGER NOT NULL,
                       currency TEXT NOT NULL
                     )
-                    """);
+                    """.formatted(dialect.autoIdColumn()));
             statement.execute("""
                     CREATE TABLE IF NOT EXISTS api_keys (
                       token_hash TEXT PRIMARY KEY,
@@ -119,20 +134,35 @@ public final class InMemoryLedger implements AutoCloseable {
                       label TEXT NOT NULL
                     )
                     """);
+            statement.execute("""
+                    CREATE TABLE IF NOT EXISTS webhook_outbox (
+                      %s,
+                      transaction_id TEXT NOT NULL,
+                      event_type TEXT NOT NULL,
+                      payload TEXT NOT NULL,
+                      status TEXT NOT NULL,
+                      attempts INTEGER NOT NULL,
+                      next_attempt_at INTEGER NOT NULL,
+                      last_error TEXT,
+                      created_at INTEGER NOT NULL,
+                      UNIQUE (transaction_id, event_type)
+                    )
+                    """.formatted(dialect.autoIdColumn()));
             statement.execute("CREATE INDEX IF NOT EXISTS payments_created_at ON payments(created_at)");
             statement.execute("CREATE INDEX IF NOT EXISTS payments_created_txn ON payments(created_at, transaction_id)");
             statement.execute("CREATE INDEX IF NOT EXISTS journal_account ON journal(account_id)");
             statement.execute("CREATE UNIQUE INDEX IF NOT EXISTS api_keys_label ON api_keys(label)");
+            statement.execute("CREATE INDEX IF NOT EXISTS outbox_pending ON webhook_outbox(status, next_attempt_at)");
         }
     }
 
     private void migrateSchema() throws SQLException {
-        if (!hasColumn("payments", "refund_of")) {
+        if (!dialect.hasColumn(conn, "payments", "refund_of")) {
             try (Statement statement = conn.createStatement()) {
                 statement.execute("ALTER TABLE payments ADD COLUMN refund_of TEXT");
             }
         }
-        if (!hasColumn("payments", "memo")) {
+        if (!dialect.hasColumn(conn, "payments", "memo")) {
             try (Statement statement = conn.createStatement()) {
                 statement.execute("ALTER TABLE payments ADD COLUMN memo TEXT");
             }
@@ -140,19 +170,8 @@ public final class InMemoryLedger implements AutoCloseable {
         try (Statement statement = conn.createStatement()) {
             statement.execute("CREATE INDEX IF NOT EXISTS payments_refund_of ON payments(refund_of)");
             statement.execute("CREATE UNIQUE INDEX IF NOT EXISTS api_keys_label ON api_keys(label)");
+            statement.execute("CREATE INDEX IF NOT EXISTS outbox_pending ON webhook_outbox(status, next_attempt_at)");
         }
-    }
-
-    private boolean hasColumn(String table, String column) throws SQLException {
-        try (Statement statement = conn.createStatement();
-             ResultSet rs = statement.executeQuery("PRAGMA table_info(" + table + ")")) {
-            while (rs.next()) {
-                if (column.equalsIgnoreCase(rs.getString("name"))) {
-                    return true;
-                }
-            }
-        }
-        return false;
     }
 
     private void seedAccountsIfEmpty() throws SQLException {
@@ -204,7 +223,7 @@ public final class InMemoryLedger implements AutoCloseable {
             try {
                 insertApiKey(token, role, resolved);
             } catch (SQLException e) {
-                if (String.valueOf(e.getMessage()).contains("UNIQUE")) {
+                if (dialect.uniqueViolation(e)) {
                     throw new InvalidTransactionException("api key already exists: " + resolved);
                 }
                 throw new IllegalStateException(e);
@@ -332,7 +351,7 @@ public final class InMemoryLedger implements AutoCloseable {
                     ps.executeUpdate();
                 }
             } catch (SQLException e) {
-                if (String.valueOf(e.getMessage()).contains("UNIQUE")) {
+                if (dialect.uniqueViolation(e)) {
                     throw new InvalidTransactionException("account already exists: " + accountId);
                 }
                 throw new IllegalStateException(e);
@@ -785,6 +804,133 @@ public final class InMemoryLedger implements AutoCloseable {
             ps.setString(11, posted.memo() == null ? "" : posted.memo());
             ps.executeUpdate();
         }
+        insertOutbox(posted);
+    }
+
+    private void insertOutbox(PostedTransaction posted) throws SQLException {
+        var event = PaymentEvents.eventType(posted.status());
+        if (event.isEmpty()) {
+            return;
+        }
+        String eventType = event.get();
+        String payload = PaymentEvents.payload(posted, eventType);
+        long now = System.currentTimeMillis();
+        try (PreparedStatement ps = conn.prepareStatement("""
+                INSERT INTO webhook_outbox(transaction_id, event_type, payload, status, attempts,
+                  next_attempt_at, last_error, created_at)
+                VALUES (?, ?, ?, ?, 0, ?, NULL, ?)
+                """)) {
+            ps.setString(1, posted.transactionId());
+            ps.setString(2, eventType);
+            ps.setString(3, payload);
+            ps.setString(4, OutboxRecord.PENDING);
+            ps.setLong(5, now);
+            ps.setLong(6, now);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            if (dialect.uniqueViolation(e)) {
+                return;
+            }
+            throw e;
+        }
+    }
+
+    public List<OutboxRecord> pendingOutbox(int limit) {
+        int cap = limit <= 0 ? 20 : Math.min(limit, 100);
+        long now = System.currentTimeMillis();
+        synchronized (lock) {
+            try (PreparedStatement ps = conn.prepareStatement("""
+                    SELECT id, transaction_id, event_type, payload, status, attempts, next_attempt_at, last_error
+                    FROM webhook_outbox
+                    WHERE status = ? AND next_attempt_at <= ?
+                    ORDER BY id ASC
+                    LIMIT ?
+                    """)) {
+                ps.setString(1, OutboxRecord.PENDING);
+                ps.setLong(2, now);
+                ps.setInt(3, cap);
+                try (ResultSet rs = ps.executeQuery()) {
+                    List<OutboxRecord> rows = new ArrayList<>();
+                    while (rs.next()) {
+                        rows.add(mapOutbox(rs));
+                    }
+                    return List.copyOf(rows);
+                }
+            } catch (SQLException e) {
+                throw new IllegalStateException(e);
+            }
+        }
+    }
+
+    public List<OutboxRecord> listOutbox() {
+        synchronized (lock) {
+            try (Statement statement = conn.createStatement();
+                 ResultSet rs = statement.executeQuery("""
+                         SELECT id, transaction_id, event_type, payload, status, attempts, next_attempt_at, last_error
+                         FROM webhook_outbox ORDER BY id ASC
+                         """)) {
+                List<OutboxRecord> rows = new ArrayList<>();
+                while (rs.next()) {
+                    rows.add(mapOutbox(rs));
+                }
+                return List.copyOf(rows);
+            } catch (SQLException e) {
+                throw new IllegalStateException(e);
+            }
+        }
+    }
+
+    public void markOutboxDelivered(long id) {
+        updateOutbox(id, OutboxRecord.DELIVERED, -1, 0, null);
+    }
+
+    public void markOutboxFailed(long id, String error) {
+        updateOutbox(id, OutboxRecord.FAILED, -1, 0, error);
+    }
+
+    public void markOutboxRetry(long id, int attempts, long nextAttemptAtMillis, String error) {
+        updateOutbox(id, OutboxRecord.PENDING, attempts, nextAttemptAtMillis, error);
+    }
+
+    private void updateOutbox(long id, String status, int attempts, long nextAttemptAtMillis, String error) {
+        synchronized (lock) {
+            try {
+                if (attempts < 0) {
+                    try (PreparedStatement ps = conn.prepareStatement(
+                            "UPDATE webhook_outbox SET status = ?, last_error = ? WHERE id = ?")) {
+                        ps.setString(1, status);
+                        ps.setString(2, error);
+                        ps.setLong(3, id);
+                        ps.executeUpdate();
+                    }
+                } else {
+                    try (PreparedStatement ps = conn.prepareStatement(
+                            "UPDATE webhook_outbox SET status = ?, attempts = ?, next_attempt_at = ?, last_error = ? WHERE id = ?")) {
+                        ps.setString(1, status);
+                        ps.setInt(2, attempts);
+                        ps.setLong(3, nextAttemptAtMillis);
+                        ps.setString(4, error);
+                        ps.setLong(5, id);
+                        ps.executeUpdate();
+                    }
+                }
+            } catch (SQLException e) {
+                throw new IllegalStateException(e);
+            }
+        }
+    }
+
+    private static OutboxRecord mapOutbox(ResultSet rs) throws SQLException {
+        return new OutboxRecord(
+                rs.getLong(1),
+                rs.getString(2),
+                rs.getString(3),
+                rs.getString(4),
+                rs.getString(5),
+                rs.getInt(6),
+                rs.getLong(7),
+                rs.getString(8)
+        );
     }
 
     private void insertJournal(String txnId, String accountId, long delta, String currency) throws SQLException {

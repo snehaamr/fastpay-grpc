@@ -3,7 +3,7 @@ package fastpay.server;
 import fastpay.fraud.FraudGuard;
 import fastpay.ledger.AccountSnapshot;
 import fastpay.ledger.CreatedApiKey;
-import fastpay.ledger.InMemoryLedger;
+import fastpay.ledger.Ledger;
 import fastpay.ledger.InvalidTransactionException;
 import fastpay.ledger.JournalEntry;
 import fastpay.ledger.Page;
@@ -47,18 +47,18 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
     private static final Logger log = LoggerFactory.getLogger(FastPayServiceImpl.class);
 
     private final ScheduledExecutorService workerPool;
-    private final InMemoryLedger ledger;
+    private final Ledger ledger;
     private final FraudGuard fraudGuard;
 
     public FastPayServiceImpl(ScheduledExecutorService workerPool) {
-        this(workerPool, new InMemoryLedger(), new FraudGuard());
+        this(workerPool, new Ledger(), new FraudGuard());
     }
 
-    public FastPayServiceImpl(ScheduledExecutorService workerPool, InMemoryLedger ledger) {
+    public FastPayServiceImpl(ScheduledExecutorService workerPool, Ledger ledger) {
         this(workerPool, ledger, new FraudGuard());
     }
 
-    public FastPayServiceImpl(ScheduledExecutorService workerPool, InMemoryLedger ledger, FraudGuard fraudGuard) {
+    public FastPayServiceImpl(ScheduledExecutorService workerPool, Ledger ledger, FraudGuard fraudGuard) {
         this.workerPool = workerPool;
         this.ledger = ledger;
         this.fraudGuard = fraudGuard;
@@ -126,7 +126,7 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
                 String message = "Posted " + posted.get()
                         + ", failed=" + failed.get()
                         + ", replayed=" + replayed.get()
-                        + ", total=" + InMemoryLedger.formatAmount(totalCents.get());
+                        + ", total=" + Ledger.formatAmount(totalCents.get());
                 respObs.onNext(TransactionResponse.newBuilder()
                         .setTransactionId("bulk-upload")
                         .setSuccess(success)
@@ -325,7 +325,7 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
         workerPool.execute(context.wrap(() -> {
             try {
                 long opening = req.getOpeningCents() == 0
-                        ? InMemoryLedger.DEFAULT_OPENING_CENTS
+                        ? Ledger.DEFAULT_OPENING_CENTS
                         : req.getOpeningCents();
                 ledger.openAccount(req.getAccountId(), opening, req.getCurrency());
                 respObs.onNext(toAccountView(ledger.getAccount(req.getAccountId())));
