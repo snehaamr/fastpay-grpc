@@ -52,7 +52,12 @@ public class FastPayClient {
     public FastPayClient(String host, int port, RuntimeConfig config) throws IOException {
         NettyChannelBuilder builder = NettyChannelBuilder.forAddress(host, port);
         if (config.tls()) {
-            builder.sslContext(Tls.clientContext(config.trustCert()));
+            if (config.mtls()) {
+                builder.sslContext(Tls.clientContext(
+                        config.trustCert(), config.clientCert(), config.clientKey()));
+            } else {
+                builder.sslContext(Tls.clientContext(config.trustCert()));
+            }
         } else {
             builder.usePlaintext();
         }

@@ -122,17 +122,9 @@ class FastPayServerTest {
         Path ca = dir.resolve("ca.crt");
         Path db = dir.resolve("fastpay.db");
         Tls.ensureLocalhostCerts(cert, key, ca);
-        RuntimeConfig tls = new RuntimeConfig(
-                true,
-                cert,
-                key,
-                ca,
-                db,
-                Auth.PAYMENTS_TOKEN,
-                Auth.ADMIN_TOKEN,
-                RuntimeConfig.DEFAULT_RATE_LIMIT_QPS,
-                RuntimeConfig.DEFAULT_RATE_LIMIT_BURST
-        );
+        RuntimeConfig tls = RuntimeConfig.plaintext()
+                .withDb(db)
+                .withTls(true, cert, key, ca);
         FastPayServer server = new FastPayServer(0, tls);
         server.start();
         FastPayClient client = new FastPayClient("localhost", server.getPort(), tls);
@@ -142,5 +134,108 @@ class FastPayServerTest {
             client.shutdown();
             server.stop();
         }
+    }
+
+    @Test
+    void clientCanTalkOverMtls() throws Exception {
+        Path dir = Files.createTempDirectory("fastpay-mtls");
+        RuntimeConfig mtls = mtlsConfig(dir);
+        FastPayServer server = new FastPayServer(0, mtls);
+        server.start();
+        FastPayClient client = new FastPayClient("localhost", server.getPort(), mtls);
+        try {
+            client.runUnary();
+        } finally {
+            client.shutdown();
+            server.stop();
+        }
+    }
+
+    @Test
+    void mtlsRejectsClientWithoutCertificate() throws Exception {
+        Path dir = Files.createTempDirectory("fastpay-mtls-nocert");
+        RuntimeConfig mtls = mtlsConfig(dir);
+        FastPayServer server = new FastPayServer(0, mtls);
+        server.start();
+        RuntimeConfig tlsOnly = RuntimeConfig.plaintext()
+                .withDb(dir.resolve("client.db"))
+                .withTls(true, mtls.cert(), mtls.key(), mtls.trustCert());
+        FastPayClient client = new FastPayClient("localhost", server.getPort(), tlsOnly);
+        try {
+            StatusRuntimeException ex = assertThrows(StatusRuntimeException.class, client::runUnary);
+            assertEquals(Status.Code.UNAVAILABLE, ex.getStatus().getCode());
+        } finally {
+            client.shutdown();
+            server.stop();
+        }
+    }
+
+    @Test
+    void mtlsRejectsUntrustedClientCertificate() throws Exception {
+        Path dir = Files.createTempDirectory("fastpay-mtls-ok");
+        Path other = Files.createTempDirectory("fastpay-mtls-other");
+        RuntimeConfig mtls = mtlsConfig(dir);
+        RuntimeConfig untrusted = mtlsConfig(other);
+        FastPayServer server = new FastPayServer(0, mtls);
+        server.start();
+        RuntimeConfig rogue = RuntimeConfig.plaintext()
+                .withDb(other.resolve("fastpay.db"))
+                .withTls(true, mtls.cert(), mtls.key(), mtls.trustCert())
+                .withMtls(untrusted.clientCert(), untrusted.clientKey());
+        FastPayClient client = new FastPayClient("localhost", server.getPort(), rogue);
+        try {
+            StatusRuntimeException ex = assertThrows(StatusRuntimeException.class, client::runUnary);
+            assertEquals(Status.Code.UNAVAILABLE, ex.getStatus().getCode());
+        } finally {
+            client.shutdown();
+            server.stop();
+        }
+    }
+
+    @Test
+    void mtlsStillRequiresBearerToken() throws Exception {
+        Path dir = Files.createTempDirectory("fastpay-mtls-auth");
+        RuntimeConfig mtls = mtlsConfig(dir);
+        FastPayServer server = new FastPayServer(0, mtls);
+        server.start();
+        ManagedChannel channel = NettyChannelBuilder.forAddress("localhost", server.getPort())
+                .sslContext(Tls.clientContext(mtls.trustCert(), mtls.clientCert(), mtls.clientKey()))
+                .build();
+        try {
+            HealthCheckResponse health = HealthGrpc.newBlockingStub(channel)
+                    .withDeadlineAfter(5, TimeUnit.SECONDS)
+                    .check(HealthCheckRequest.getDefaultInstance());
+            assertEquals(HealthCheckResponse.ServingStatus.SERVING, health.getStatus());
+            StatusRuntimeException ex = assertThrows(
+                    StatusRuntimeException.class,
+                    () -> FastPayGrpc.newBlockingStub(channel)
+                            .withDeadlineAfter(5, TimeUnit.SECONDS)
+                            .processTransaction(TransactionRequest.newBuilder()
+                                    .setTransactionId("mtls-no-token")
+                                    .setAccountFrom("ACC-111")
+                                    .setAccountTo("ACC-222")
+                                    .setAmountCents(1)
+                                    .setCurrency("USD")
+                                    .build())
+            );
+            assertEquals(Status.Code.UNAUTHENTICATED, ex.getStatus().getCode());
+        } finally {
+            channel.shutdownNow();
+            channel.awaitTermination(5, TimeUnit.SECONDS);
+            server.stop();
+        }
+    }
+
+    private static RuntimeConfig mtlsConfig(Path dir) throws Exception {
+        Path cert = dir.resolve("server.crt");
+        Path key = dir.resolve("server.key");
+        Path ca = dir.resolve("ca.crt");
+        Path clientCert = dir.resolve("client.crt");
+        Path clientKey = dir.resolve("client.key");
+        Tls.ensureLocalhostMtls(ca, cert, key, clientCert, clientKey);
+        return RuntimeConfig.plaintext()
+                .withDb(dir.resolve("fastpay.db"))
+                .withTls(true, cert, key, ca)
+                .withMtls(clientCert, clientKey);
     }
 }

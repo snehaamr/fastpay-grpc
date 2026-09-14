@@ -72,8 +72,16 @@ public class FastPayServer {
                 .permitKeepAliveTime(5, TimeUnit.SECONDS)
                 .permitKeepAliveWithoutCalls(true);
         if (config.tls()) {
-            Tls.ensureLocalhostCerts(config.cert(), config.key(), config.trustCert());
-            builder.sslContext(Tls.serverContext(config.cert(), config.key()));
+            if (config.mtls()) {
+                Tls.ensureLocalhostMtls(
+                        config.trustCert(), config.cert(), config.key(),
+                        config.clientCert(), config.clientKey());
+                builder.sslContext(Tls.serverContext(
+                        config.cert(), config.key(), config.trustCert(), true));
+            } else {
+                Tls.ensureLocalhostCerts(config.cert(), config.key(), config.trustCert());
+                builder.sslContext(Tls.serverContext(config.cert(), config.key()));
+            }
         }
         this.server = builder.build();
     }
@@ -129,7 +137,7 @@ public class FastPayServer {
         RuntimeConfig config = RuntimeConfig.fromEnv();
         FastPayServer server = new FastPayServer(DEFAULT_PORT, config);
         server.start();
-        System.out.println("tls=" + config.tls() + " db=" + config.db()
+        System.out.println("tls=" + formatTls(config) + " db=" + config.db()
                 + " rate_limit=" + formatRateLimit(config)
                 + " roles=pay-token/admin-token (override FASTPAY_PAY_TOKEN / FASTPAY_ADMIN_TOKEN)");
         Runtime.getRuntime().addShutdownHook(new Thread(server::stop));
@@ -141,5 +149,15 @@ public class FastPayServer {
             return "off";
         }
         return config.rateLimitQps() + "/s burst=" + config.rateLimitBurst();
+    }
+
+    private static String formatTls(RuntimeConfig config) {
+        if (config.mtls()) {
+            return "mtls";
+        }
+        if (config.tls()) {
+            return "server";
+        }
+        return "off";
     }
 }
