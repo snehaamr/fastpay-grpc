@@ -28,6 +28,7 @@ dependencies {
     implementation("io.grpc:grpc-protobuf:${grpcVersion}")
     implementation("io.grpc:grpc-services:${grpcVersion}")
     implementation("org.xerial:sqlite-jdbc:3.47.1.0")
+    implementation("org.postgresql:postgresql:42.7.4")
     implementation("com.google.protobuf:protobuf-java:${protobufVersion}")
     // Required by generated gRPC stubs on Java 9+
     implementation("javax.annotation:javax.annotation-api:1.3.2")

@@ -9,6 +9,20 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: fastpay
+          POSTGRES_USER: fastpay
+          POSTGRES_PASSWORD: fastpay
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U fastpay -d fastpay"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -16,4 +30,6 @@ jobs:
           distribution: temurin
           java-version: "21"
       - name: Test
+        env:
+          FASTPAY_TEST_JDBC_URL: jdbc:postgresql://127.0.0.1:5432/fastpay?user=fastpay&password=fastpay
         run: chmod +x gradlew && ./gradlew test --no-daemon
