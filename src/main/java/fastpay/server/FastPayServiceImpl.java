@@ -5,12 +5,15 @@ import fastpay.ledger.AccountSnapshot;
 import fastpay.ledger.InMemoryLedger;
 import fastpay.ledger.InvalidTransactionException;
 import fastpay.ledger.JournalEntry;
+import fastpay.ledger.Page;
 import fastpay.ledger.PostedTransaction;
 import fastpay.ledger.SubmitResult;
 import fastpay.proto.AccountQuery;
 import fastpay.proto.AccountView;
 import fastpay.proto.FastPayGrpc;
 import fastpay.proto.JournalRecord;
+import fastpay.proto.ListAccountsQuery;
+import fastpay.proto.ListAccountsView;
 import fastpay.proto.ListJournalQuery;
 import fastpay.proto.ListJournalView;
 import fastpay.proto.ListTransactionsQuery;
@@ -266,14 +269,45 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
         Context context = Context.current();
         workerPool.execute(context.wrap(() -> {
             try {
+                Page<PostedTransaction> page = ledger.listPayments(
+                        req.getAccountId(), req.getLimit(), req.getPageToken());
                 ListTransactionsView.Builder view = ListTransactionsView.newBuilder();
-                for (PostedTransaction payment : ledger.listPayments(req.getAccountId(), req.getLimit())) {
+                for (PostedTransaction payment : page.items()) {
                     view.addPayments(toPaymentRecord(payment));
+                }
+                if (page.hasNextPage()) {
+                    view.setNextPageToken(page.nextPageToken());
                 }
                 respObs.onNext(view.build());
                 respObs.onCompleted();
+            } catch (InvalidTransactionException e) {
+                respObs.onError(invalidStatus(e).asRuntimeException());
             } catch (RuntimeException e) {
                 log.error("listTransactions failed", e);
+                respObs.onError(Status.INTERNAL.withDescription("list error").asRuntimeException());
+            }
+        }));
+    }
+
+    @Override
+    public void listAccounts(ListAccountsQuery req, StreamObserver<ListAccountsView> respObs) {
+        Context context = Context.current();
+        workerPool.execute(context.wrap(() -> {
+            try {
+                Page<AccountSnapshot> page = ledger.listAccounts(req.getLimit(), req.getPageToken());
+                ListAccountsView.Builder view = ListAccountsView.newBuilder();
+                for (AccountSnapshot snapshot : page.items()) {
+                    view.addAccounts(toAccountView(snapshot));
+                }
+                if (page.hasNextPage()) {
+                    view.setNextPageToken(page.nextPageToken());
+                }
+                respObs.onNext(view.build());
+                respObs.onCompleted();
+            } catch (InvalidTransactionException e) {
+                respObs.onError(invalidStatus(e).asRuntimeException());
+            } catch (RuntimeException e) {
+                log.error("listAccounts failed", e);
                 respObs.onError(Status.INTERNAL.withDescription("list error").asRuntimeException());
             }
         }));
@@ -327,9 +361,10 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
         Context context = Context.current();
         workerPool.execute(context.wrap(() -> {
             try {
-                int limit = req.getLimit() <= 0 ? 50 : req.getLimit();
+                Page<JournalEntry> page = ledger.journalEntries(
+                        req.getAccountId(), req.getLimit(), req.getPageToken());
                 ListJournalView.Builder view = ListJournalView.newBuilder();
-                for (JournalEntry entry : ledger.journalEntries(req.getAccountId(), limit)) {
+                for (JournalEntry entry : page.items()) {
                     view.addEntries(JournalRecord.newBuilder()
                             .setTransactionId(entry.transactionId())
                             .setAccountId(entry.accountId())
@@ -337,8 +372,13 @@ public class FastPayServiceImpl extends FastPayGrpc.FastPayImplBase {
                             .setCurrency(entry.currency())
                             .build());
                 }
+                if (page.hasNextPage()) {
+                    view.setNextPageToken(page.nextPageToken());
+                }
                 respObs.onNext(view.build());
                 respObs.onCompleted();
+            } catch (InvalidTransactionException e) {
+                respObs.onError(invalidStatus(e).asRuntimeException());
             } catch (RuntimeException e) {
                 log.error("listJournal failed", e);
                 respObs.onError(Status.INTERNAL.withDescription("journal error").asRuntimeException());

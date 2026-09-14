@@ -237,6 +237,30 @@ class InMemoryLedgerTest {
         }
     }
 
+    @Test
+    void listAccountsAndPaymentsUseKeysetPages() {
+        ledger.openAccount("ACC-ZZZ", 100, "USD");
+        Page<AccountSnapshot> firstAccounts = ledger.listAccounts(2, null);
+        assertEquals(2, firstAccounts.items().size());
+        assertTrue(firstAccounts.hasNextPage());
+        Page<AccountSnapshot> rest = ledger.listAccounts(10, firstAccounts.nextPageToken());
+        assertTrue(rest.items().stream().noneMatch(account ->
+                account.accountId().equals(firstAccounts.items().get(0).accountId())
+                        || account.accountId().equals(firstAccounts.items().get(1).accountId())));
+
+        ledger.submit(request("txn-p1", "ACC-111", "ACC-222", 100));
+        ledger.submit(request("txn-p2", "ACC-111", "ACC-222", 200));
+        ledger.submit(request("txn-p3", "ACC-111", "ACC-222", 300));
+        Page<PostedTransaction> page1 = ledger.listPayments("ACC-111", 2, null);
+        assertEquals(2, page1.items().size());
+        assertEquals("txn-p3", page1.items().get(0).transactionId());
+        Page<PostedTransaction> page2 = ledger.listPayments("ACC-111", 2, page1.nextPageToken());
+        assertEquals("txn-p1", page2.items().get(0).transactionId());
+        assertFalse(page2.hasNextPage());
+
+        assertThrows(InvalidTransactionException.class, () -> ledger.listAccounts(2, "%%%"));
+    }
+
     private void assertJournalBalances(String accountId) {
         long journalSum = ledger.journalEntries(accountId).stream()
                 .mapToLong(JournalEntry::deltaCents)

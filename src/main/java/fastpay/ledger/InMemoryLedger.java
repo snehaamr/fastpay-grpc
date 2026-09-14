@@ -118,6 +118,7 @@ public final class InMemoryLedger implements AutoCloseable {
                     )
                     """);
             statement.execute("CREATE INDEX IF NOT EXISTS payments_created_at ON payments(created_at)");
+            statement.execute("CREATE INDEX IF NOT EXISTS payments_created_txn ON payments(created_at, transaction_id)");
             statement.execute("CREATE INDEX IF NOT EXISTS journal_account ON journal(account_id)");
         }
     }
@@ -256,25 +257,68 @@ public final class InMemoryLedger implements AutoCloseable {
     }
 
     public List<PostedTransaction> listPayments(String accountId, int limit) {
+        return listPayments(accountId, limit, null).items();
+    }
+
+    public Page<PostedTransaction> listPayments(String accountId, int limit, String pageToken) {
         int cap = limit <= 0 ? 50 : Math.min(limit, 500);
+        PageTokens.PaymentCursor cursor = blank(pageToken) ? null : PageTokens.decodePayment(pageToken);
+        boolean filterAccount = !blank(accountId);
         synchronized (lock) {
-            String sql = (accountId == null || accountId.isBlank())
-                    ? "SELECT * FROM payments ORDER BY created_at DESC LIMIT ?"
-                    : "SELECT * FROM payments WHERE account_from = ? OR account_to = ? ORDER BY created_at DESC LIMIT ?";
-            try (PreparedStatement ps = conn.prepareStatement(sql)) {
-                if (accountId == null || accountId.isBlank()) {
-                    ps.setInt(1, cap);
-                } else {
-                    ps.setString(1, accountId);
-                    ps.setString(2, accountId);
-                    ps.setInt(3, cap);
+            StringBuilder sql = new StringBuilder("SELECT * FROM payments WHERE 1=1");
+            if (filterAccount) {
+                sql.append(" AND (account_from = ? OR account_to = ?)");
+            }
+            if (cursor != null) {
+                sql.append(" AND (created_at < ? OR (created_at = ? AND transaction_id < ?))");
+            }
+            sql.append(" ORDER BY created_at DESC, transaction_id DESC LIMIT ?");
+            try (PreparedStatement ps = conn.prepareStatement(sql.toString())) {
+                int idx = 1;
+                if (filterAccount) {
+                    ps.setString(idx++, accountId);
+                    ps.setString(idx++, accountId);
                 }
+                if (cursor != null) {
+                    ps.setLong(idx++, cursor.createdAtMillis());
+                    ps.setLong(idx++, cursor.createdAtMillis());
+                    ps.setString(idx++, cursor.transactionId());
+                }
+                ps.setInt(idx, cap + 1);
                 try (ResultSet rs = ps.executeQuery()) {
                     List<PostedTransaction> rows = new ArrayList<>();
                     while (rs.next()) {
                         rows.add(mapPayment(rs));
                     }
-                    return rows;
+                    return page(rows, cap, last -> PageTokens.encodePayment(
+                            last.createdAtMillis(), last.transactionId()));
+                }
+            } catch (SQLException e) {
+                throw new IllegalStateException(e);
+            }
+        }
+    }
+
+    public Page<AccountSnapshot> listAccounts(int limit, String pageToken) {
+        int cap = limit <= 0 ? 50 : Math.min(limit, 500);
+        String afterId = blank(pageToken) ? null : PageTokens.decodeAccount(pageToken);
+        synchronized (lock) {
+            String sql = afterId == null
+                    ? "SELECT id, balance_cents, currency FROM accounts ORDER BY id ASC LIMIT ?"
+                    : "SELECT id, balance_cents, currency FROM accounts WHERE id > ? ORDER BY id ASC LIMIT ?";
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                if (afterId == null) {
+                    ps.setInt(1, cap + 1);
+                } else {
+                    ps.setString(1, afterId);
+                    ps.setInt(2, cap + 1);
+                }
+                try (ResultSet rs = ps.executeQuery()) {
+                    List<AccountSnapshot> rows = new ArrayList<>();
+                    while (rs.next()) {
+                        rows.add(new AccountSnapshot(rs.getString(1), rs.getLong(2), rs.getString(3)));
+                    }
+                    return page(rows, cap, last -> PageTokens.encodeAccount(last.accountId()));
                 }
             } catch (SQLException e) {
                 throw new IllegalStateException(e);
@@ -283,33 +327,24 @@ public final class InMemoryLedger implements AutoCloseable {
     }
 
     public List<JournalEntry> journalEntries(String accountId) {
-        return journalEntries(accountId, 0);
-    }
-
-    public List<JournalEntry> journalEntries(String accountId, int limit) {
-        boolean capped = limit > 0;
-        int cap = capped ? Math.min(limit, 1000) : Integer.MAX_VALUE;
         synchronized (lock) {
-            boolean allAccounts = accountId == null || accountId.isBlank();
-            String sql = allAccounts
-                    ? "SELECT transaction_id, account_id, delta_cents, currency FROM journal ORDER BY id DESC"
-                    : "SELECT transaction_id, account_id, delta_cents, currency FROM journal WHERE account_id = ? ORDER BY id DESC";
-            if (capped) {
-                sql += " LIMIT ?";
-            }
+            boolean filterAccount = !blank(accountId);
+            String sql = filterAccount
+                    ? "SELECT id, transaction_id, account_id, delta_cents, currency FROM journal WHERE account_id = ? ORDER BY id"
+                    : "SELECT id, transaction_id, account_id, delta_cents, currency FROM journal ORDER BY id";
             try (PreparedStatement ps = conn.prepareStatement(sql)) {
-                int idx = 1;
-                if (!allAccounts) {
-                    ps.setString(idx++, accountId);
-                }
-                if (capped) {
-                    ps.setInt(idx, cap);
+                if (filterAccount) {
+                    ps.setString(1, accountId);
                 }
                 try (ResultSet rs = ps.executeQuery()) {
                     List<JournalEntry> rows = new ArrayList<>();
                     while (rs.next()) {
                         rows.add(new JournalEntry(
-                                rs.getString(1), rs.getString(2), rs.getLong(3), rs.getString(4)));
+                                rs.getLong(1),
+                                rs.getString(2),
+                                rs.getString(3),
+                                rs.getLong(4),
+                                rs.getString(5)));
                     }
                     return rows;
                 }
@@ -317,6 +352,64 @@ public final class InMemoryLedger implements AutoCloseable {
                 throw new IllegalStateException(e);
             }
         }
+    }
+
+    public List<JournalEntry> journalEntries(String accountId, int limit) {
+        return journalEntries(accountId, limit, null).items();
+    }
+
+    public Page<JournalEntry> journalEntries(String accountId, int limit, String pageToken) {
+        int cap = limit <= 0 ? 50 : Math.min(limit, 1000);
+        Long afterId = blank(pageToken) ? null : PageTokens.decodeJournal(pageToken);
+        boolean filterAccount = !blank(accountId);
+        synchronized (lock) {
+            StringBuilder sql = new StringBuilder(
+                    "SELECT id, transaction_id, account_id, delta_cents, currency FROM journal WHERE 1=1");
+            if (filterAccount) {
+                sql.append(" AND account_id = ?");
+            }
+            if (afterId != null) {
+                sql.append(" AND id < ?");
+            }
+            sql.append(" ORDER BY id DESC LIMIT ?");
+            try (PreparedStatement ps = conn.prepareStatement(sql.toString())) {
+                int idx = 1;
+                if (filterAccount) {
+                    ps.setString(idx++, accountId);
+                }
+                if (afterId != null) {
+                    ps.setLong(idx++, afterId);
+                }
+                ps.setInt(idx, cap + 1);
+                try (ResultSet rs = ps.executeQuery()) {
+                    List<JournalEntry> rows = new ArrayList<>();
+                    while (rs.next()) {
+                        rows.add(new JournalEntry(
+                                rs.getLong(1),
+                                rs.getString(2),
+                                rs.getString(3),
+                                rs.getLong(4),
+                                rs.getString(5)));
+                    }
+                    return page(rows, cap, last -> PageTokens.encodeJournal(last.id()));
+                }
+            } catch (SQLException e) {
+                throw new IllegalStateException(e);
+            }
+        }
+    }
+
+    private static boolean blank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    private static <T> Page<T> page(List<T> rows, int cap, java.util.function.Function<T, String> token) {
+        String next = "";
+        if (rows.size() > cap) {
+            rows = new ArrayList<>(rows.subList(0, cap));
+            next = token.apply(rows.get(rows.size() - 1));
+        }
+        return new Page<>(List.copyOf(rows), next);
     }
 
     public SubmitResult submit(TransactionRequest request) {

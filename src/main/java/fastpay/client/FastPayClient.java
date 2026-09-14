@@ -4,6 +4,8 @@ import fastpay.ledger.InMemoryLedger;
 import fastpay.proto.AccountQuery;
 import fastpay.proto.AccountView;
 import fastpay.proto.FastPayGrpc;
+import fastpay.proto.ListAccountsQuery;
+import fastpay.proto.ListAccountsView;
 import fastpay.proto.ListJournalQuery;
 import fastpay.proto.ListJournalView;
 import fastpay.proto.ListTransactionsQuery;
@@ -123,10 +125,28 @@ public class FastPayClient {
                 .setAccountId("ACC-111")
                 .setLimit(5)
                 .build();
-        blockingStub.listTransactions(listQuery).getPaymentsList().forEach(payment ->
+        var payments = blockingStub.listTransactions(listQuery);
+        payments.getPaymentsList().forEach(payment ->
                 System.out.println("Payment " + payment.getTransactionId()
                         + " " + payment.getStatus()
                         + " refund_of=" + payment.getRefundOf()));
+        if (!payments.getNextPageToken().isBlank()) {
+            System.out.println("More payments (next_page_token set)");
+        }
+
+        ListAccountsView accounts = blockingStub.listAccounts(ListAccountsQuery.newBuilder()
+                .setLimit(3)
+                .build());
+        accounts.getAccountsList().forEach(account ->
+                System.out.println("Account " + account.getAccountId()
+                        + " balance=" + InMemoryLedger.formatAmount(account.getBalanceCents())));
+        if (!accounts.getNextPageToken().isBlank()) {
+            ListAccountsView page2 = blockingStub.listAccounts(ListAccountsQuery.newBuilder()
+                    .setLimit(3)
+                    .setPageToken(accounts.getNextPageToken())
+                    .build());
+            System.out.println("Account page 2: " + page2.getAccountsCount() + " more");
+        }
 
         ListJournalView journal = adminStub.listJournal(ListJournalQuery.newBuilder()
                 .setAccountId("ACC-111")
